@@ -45,6 +45,7 @@ namespace hdmap {
  * This class contains the original data that can be used to generate
  * hdmap::Path.
  **/
+// 添加了一些routing的信息
 class RouteSegments : public std::vector<LaneSegment> {
  public:
   /**

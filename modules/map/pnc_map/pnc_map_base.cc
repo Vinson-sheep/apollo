@@ -36,6 +36,7 @@ DEFINE_double(
     look_forward_long_distance, 250,
     "look forward this distance when creating reference line from routing");
 
+// 如果命令合法则更新命令
 bool PncMapBase::UpdatePlanningCommand(
     const planning::PlanningCommand &command) {
   if (!IsValid(command)) {
@@ -46,6 +47,7 @@ bool PncMapBase::UpdatePlanningCommand(
   return true;
 }
 
+// 根据速度判别，只有两个距离？
 double PncMapBase::LookForwardDistance(const double velocity) {
   auto forward_distance = velocity * FLAGS_look_forward_time_sec;
 

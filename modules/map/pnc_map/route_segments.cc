@@ -75,6 +75,7 @@ bool RouteSegments::WithinLaneSegment(const routing::LaneSegment &lane_segment,
          lane_segment.end_s() + kSegmentationEpsilon >= waypoint.s();
 }
 
+// 
 bool RouteSegments::Stitch(const RouteSegments &other) {
   auto first_waypoint = FirstWaypoint();
   bool has_overlap = IsWaypointOnSegment(other.FirstWaypoint());
@@ -241,6 +242,7 @@ bool RouteSegments::Shrink(const double s, const LaneWaypoint &waypoint,
   return true;
 }
 
+// 就是判断一下s是否在折线内
 bool RouteSegments::GetWaypoint(const double s, LaneWaypoint *waypoint) const {
   double accumulated_s = 0.0;
   bool has_projection = false;
@@ -263,6 +265,7 @@ bool RouteSegments::GetWaypoint(const double s, LaneWaypoint *waypoint) const {
   return has_projection;
 }
 
+// 判断点在折线上的投影
 bool RouteSegments::GetProjection(const common::math::Vec2d &point,
                                   common::SLPoint *sl_point,
                                   LaneWaypoint *waypoint) const {
@@ -296,6 +299,7 @@ bool RouteSegments::GetProjection(const common::math::Vec2d &point,
   return has_projection;
 }
 
+// 在位置基础上多了航向，求点在折线上的投影
 bool RouteSegments::GetProjection(const common::math::Vec2d &point,
                                   const double heading,
                                   common::SLPoint *sl_point,

@@ -73,6 +73,8 @@ ReferenceLineProvider::ReferenceLineProvider(
                                          &smoother_config_))
       << "Failed to load smoother config file "
       << FLAGS_smoother_config_filename;
+
+  // 根据配置初始化不同的参考线平滑器
   if (smoother_config_.has_qp_spline()) {
     smoother_.reset(new QpSplineReferenceLineSmoother(smoother_config_));
   } else if (smoother_config_.has_spiral()) {
@@ -86,6 +88,7 @@ ReferenceLineProvider::ReferenceLineProvider(
   // Load pnc map plugins.
   pnc_map_list_.clear();
   // Set "apollo::planning::LaneFollowMap" as default if pnc_map_class is empty.
+  // 加载地图，实际只有一张地图
   if (nullptr == reference_line_config ||
       reference_line_config->pnc_map_class().empty()) {
     const auto &pnc_map =
@@ -106,10 +109,12 @@ ReferenceLineProvider::ReferenceLineProvider(
   is_initialized_ = true;
 }
 
+// 命令居然是地图来执行的？
 bool ReferenceLineProvider::UpdatePlanningCommand(
     const planning::PlanningCommand &command) {
   std::lock_guard<std::mutex> routing_lock(routing_mutex_);
   bool find_matched_pnc_map = false;
+  // 寻找能执行指令的地图为当前地图
   for (const auto &pnc_map : pnc_map_list_) {
     if (pnc_map->CanProcess(command)) {
       current_pnc_map_ = pnc_map;
@@ -117,15 +122,16 @@ bool ReferenceLineProvider::UpdatePlanningCommand(
       break;
     }
   }
+  // 如果找不到，报异常
   if (nullptr == current_pnc_map_) {
     AERROR << "Cannot find pnc map to process input command!"
            << command.DebugString();
     return false;
-  }
   if (!find_matched_pnc_map) {
     AWARN << "Find no pnc map for the input command and the old one will be "
              "used!";
   }
+  // 让pnc_map执行命令
   // Update routing in pnc_map
   std::lock_guard<std::mutex> lock(pnc_map_mutex_);
   if (current_pnc_map_->IsNewPlanningCommand(command)) {
@@ -210,6 +216,7 @@ void ReferenceLineProvider::Reset() {
   }
 }
 
+// 直接更新不行吗，没看出来有时间上的节约
 void ReferenceLineProvider::UpdateReferenceLine(
     const std::list<ReferenceLine> &reference_lines,
     const std::list<hdmap::RouteSegments> &route_segments) {
@@ -222,11 +229,14 @@ void ReferenceLineProvider::UpdateReferenceLine(
   if (reference_lines.empty()) {
     return;
   }
+  // 如果参考线数目不一样，则参考线不一样
   std::lock_guard<std::mutex> lock(reference_lines_mutex_);
   if (reference_lines_.size() != reference_lines.size()) {
     reference_lines_ = reference_lines;
     route_segments_ = route_segments;
-  } else {
+  } 
+  // 否则，循环查看参考线内容
+  else {
     auto segment_iter = route_segments.begin();
     auto internal_iter = reference_lines_.begin();
     auto internal_segment_iter = route_segments_.begin();
@@ -264,6 +274,7 @@ void ReferenceLineProvider::UpdateReferenceLine(
   }
 }
 
+// 还要特地创造线程？
 void ReferenceLineProvider::GenerateThread() {
   while (!is_stop_) {
     static constexpr int32_t kSleepTime = 50;  // milliseconds
@@ -287,6 +298,7 @@ void ReferenceLineProvider::GenerateThread() {
   }
 }
 
+// 获取上次参考线更新的时间
 double ReferenceLineProvider::LastTimeDelay() {
   if (FLAGS_enable_reference_line_provider_thread &&
       !FLAGS_use_navigation_mode) {
@@ -297,6 +309,7 @@ double ReferenceLineProvider::LastTimeDelay() {
   }
 }
 
+// 
 bool ReferenceLineProvider::GetReferenceLines(
     std::list<ReferenceLine> *reference_lines,
     std::list<hdmap::RouteSegments> *segments) {
@@ -305,6 +318,8 @@ bool ReferenceLineProvider::GetReferenceLines(
   if (!has_planning_command_) {
     return true;
   }
+
+  // 从地图中获取参考线和车道段，并更新其内容
   if (FLAGS_use_navigation_mode) {
     double start_time = Clock::NowInSeconds();
     bool result = GetReferenceLinesFromRelativeMap(reference_lines, segments);
@@ -316,6 +331,7 @@ bool ReferenceLineProvider::GetReferenceLines(
     return result;
   }
 
+  // 如果已经存在参考线，直接使用
   if (FLAGS_enable_reference_line_provider_thread) {
     std::lock_guard<std::mutex> lock(reference_lines_mutex_);
     if (!reference_lines_.empty()) {
@@ -323,7 +339,9 @@ bool ReferenceLineProvider::GetReferenceLines(
       segments->assign(route_segments_.begin(), route_segments_.end());
       return true;
     }
-  } else {
+  } 
+  // 否则，生成一条参考线
+  else {
     double start_time = Clock::NowInSeconds();
     if (CreateReferenceLine(reference_lines, segments)) {
       UpdateReferenceLine(*reference_lines, *segments);
@@ -339,6 +357,7 @@ bool ReferenceLineProvider::GetReferenceLines(
     return false;
   }
 
+  // 如果生成失败，使用历史参考线
   reference_lines->assign(reference_line_history_.back().begin(),
                           reference_line_history_.back().end());
   segments->assign(route_segments_history_.back().begin(),
@@ -347,6 +366,7 @@ bool ReferenceLineProvider::GetReferenceLines(
   return true;
 }
 
+// 
 void ReferenceLineProvider::PrioritizeChangeLane(
     std::list<hdmap::RouteSegments> *route_segments) {
   CHECK_NOTNULL(route_segments);
@@ -360,6 +380,7 @@ void ReferenceLineProvider::PrioritizeChangeLane(
   }
 }
 
+// 基于高清地图和当前车道信息计算参考线
 bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
     std::list<ReferenceLine> *reference_lines,
     std::list<hdmap::RouteSegments> *segments) {
@@ -378,16 +399,19 @@ bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
     return false;
   }
 
+  // 获取附近的车道线
   // 1.get adc current lane info ,such as lane_id,lane_priority,neighbor lanes
   std::unordered_set<std::string> navigation_lane_ids;
   for (const auto &path_pair : relative_map_->navigation_path()) {
     const auto lane_id = path_pair.first;
     navigation_lane_ids.insert(lane_id);
   }
+  // 如果没有车道线，直接返回
   if (navigation_lane_ids.empty()) {
     AERROR << "navigation path ids is empty";
     return false;
   }
+  // 否则，选取最近的车道，计算投影点
   // get current adc lane info by vehicle state
   common::VehicleState vehicle_state = vehicle_state_provider_->vehicle_state();
   hdmap::LaneWaypoint adc_lane_way_point;
@@ -395,6 +419,8 @@ bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
                                             &adc_lane_way_point)) {
     return false;
   }
+
+  // 获取车道优先级，用于打印
   const std::string adc_lane_id = adc_lane_way_point.lane->id().id();
   auto *adc_navigation_path = apollo::common::util::FindOrNull(
       relative_map_->navigation_path(), adc_lane_id);
@@ -403,6 +429,8 @@ bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
     return false;
   }
   const uint32_t adc_lane_priority = adc_navigation_path->path_priority();
+
+  // 获取所有左车道
   // get adc left neighbor lanes
   std::vector<std::string> left_neighbor_lane_ids;
   auto left_lane_ptr = adc_lane_way_point.lane;
@@ -418,6 +446,8 @@ bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
   for (const auto &neighbor : left_neighbor_lane_ids) {
     ADEBUG << adc_lane_id << " left neighbor : " << neighbor;
   }
+
+  // 获取所有右车道
   // get adc right neighbor lanes
   std::vector<std::string> right_neighbor_lane_ids;
   auto right_lane_ptr = adc_lane_way_point.lane;
@@ -433,12 +463,15 @@ bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
   for (const auto &neighbor : right_neighbor_lane_ids) {
     ADEBUG << adc_lane_id << " right neighbor : " << neighbor;
   }
+
+  //
   // 2.get the higher priority lane info list which priority higher
   // than current lane and get the highest one as the target lane
   using LaneIdPair = std::pair<std::string, uint32_t>;
   std::vector<LaneIdPair> high_priority_lane_pairs;
   ADEBUG << "relative_map_->navigation_path_size = "
          << relative_map_->navigation_path_size();
+  // 遍历所有候选车道
   for (const auto &path_pair : relative_map_->navigation_path()) {
     const auto lane_id = path_pair.first;
     const uint32_t priority = path_pair.second.path_priority();
@@ -446,10 +479,13 @@ bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
            << " adc_lane_id = " << adc_lane_id
            << " adc_lane_priority = " << adc_lane_priority;
     // the smaller the number, the higher the priority
+    // 如果候选车道比当前车道优先级更高，则插入候选车道
     if (adc_lane_id != lane_id && priority < adc_lane_priority) {
       high_priority_lane_pairs.emplace_back(lane_id, priority);
     }
   }
+
+  // 排序，获取最优先车道。如果不是当前车道，则需要换道
   // get the target lane
   bool is_lane_change_needed = false;
   LaneIdPair target_lane_pair;
@@ -463,6 +499,8 @@ bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
     target_lane_pair = high_priority_lane_pairs.front();
     is_lane_change_needed = true;
   }
+
+  // 判断是左车道还是右车道换道，并且获得目标邻近车道
   // 3.get current lane's the nearest neighbor lane to the target lane
   // and make sure it position is left or right on the current lane
   routing::ChangeLaneType lane_change_type = routing::FORWARD;
@@ -491,6 +529,7 @@ bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
     }
   }
 
+  // 遍历附近的车道，提取车道段信息和车道离散点
   for (const auto &path_pair : relative_map_->navigation_path()) {
     const auto &lane_id = path_pair.first;
     const auto &path_points = path_pair.second.path().path_point();
@@ -510,7 +549,7 @@ bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
         segment.SetIsNeighborSegment(true);
         segment.SetPreviousAction(lane_change_type);
       } else if (lane_id == adc_lane_id) {
-        segment.SetIsOnSegment(true);
+        segment.SetIsOnSegment(true); // 位于当前车道
         segment.SetNextAction(lane_change_type);
       }
     }
@@ -518,6 +557,7 @@ bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
     segments->emplace_back(segment);
     std::vector<ReferencePoint> ref_points;
     for (const auto &path_point : path_points) {
+      // 插入的是SL坐标
       ref_points.emplace_back(
           MapPathPoint{Vec2d{path_point.x(), path_point.y()},
                        path_point.theta(),
@@ -530,6 +570,7 @@ bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
   return !segments->empty();
 }
 
+// 
 bool ReferenceLineProvider::GetNearestWayPointFromNavigationPath(
     const common::VehicleState &state,
     const std::unordered_set<std::string> &navigation_lane_ids,
@@ -548,6 +589,7 @@ bool ReferenceLineProvider::GetNearestWayPointFromNavigationPath(
     return false;
   }
 
+  // 根据朝向和位置过滤目标车道线
   // get all adc direction lanes from map in kMaxDistance range
   // by vehicle point in map
   const int status = hdmap->GetLanesWithHeading(
@@ -557,21 +599,27 @@ bool ReferenceLineProvider::GetNearestWayPointFromNavigationPath(
     return false;
   }
 
+  // 筛选出合理的车道信息
   // get lanes that exist in both map and navigation paths as valid lanes
   std::vector<hdmap::LaneInfoConstPtr> valid_lanes;
   std::copy_if(lanes.begin(), lanes.end(), std::back_inserter(valid_lanes),
                [&](hdmap::LaneInfoConstPtr ptr) {
                  return navigation_lane_ids.count(ptr->lane().id().id()) > 0;
                });
+  
+  // 如果为空，则返回
   if (valid_lanes.empty()) {
     AERROR << "no valid lane found within " << kMaxDistance
            << " meters with heading " << state.heading();
     return false;
   }
 
+  // 遍历所有候选车道
   // get nearest lane waypoints for current adc position
   double min_distance = std::numeric_limits<double>::infinity();
   for (const auto &lane : valid_lanes) {
+
+    // 将点进行投影，判断是否落在车道上
     // project adc point to lane to check if it is out of lane range
     double s = 0.0;
     double l = 0.0;
@@ -583,11 +631,14 @@ bool ReferenceLineProvider::GetNearestWayPointFromNavigationPath(
       continue;
     }
 
+    // 计算投影点和距离
     // get the nearest distance between adc point and lane
     double distance = 0.0;
     common::PointENU map_point =
         lane->GetNearestPoint({point.x(), point.y()}, &distance);
     // record the near distance lane
+
+    // 获取最近的投影点
     if (distance < min_distance) {
       double s = 0.0;
       double l = 0.0;
@@ -608,9 +659,11 @@ bool ReferenceLineProvider::GetNearestWayPointFromNavigationPath(
   return waypoint->lane != nullptr;
 }
 
+// 基于pnc地图获取segments
 bool ReferenceLineProvider::CreateRouteSegments(
     const common::VehicleState &vehicle_state,
     std::list<hdmap::RouteSegments> *segments) {
+  // 调用pnc地图进行路由，获取segmentsd
   {
     std::lock_guard<std::mutex> lock(pnc_map_mutex_);
     if (!current_pnc_map_->GetRouteSegments(vehicle_state, segments)) {
@@ -621,12 +674,14 @@ bool ReferenceLineProvider::CreateRouteSegments(
   for (auto &seg : *segments) {
     ADEBUG << seg.DebugString();
   }
+  // 如果优先换道，则插入非当前车道的segments ？？
   if (FLAGS_prioritize_change_lane) {
     PrioritizeChangeLane(segments);
   }
   return !segments->empty();
 }
 
+// 
 bool ReferenceLineProvider::CreateReferenceLine(
     std::list<ReferenceLine> *reference_lines,
     std::list<hdmap::RouteSegments> *segments) {
@@ -648,19 +703,24 @@ bool ReferenceLineProvider::CreateReferenceLine(
     AERROR << "Current pnc map is null! " << command.DebugString();
     return false;
   }
-
+  // 基于pnc地图路由获取segments
   if (!CreateRouteSegments(vehicle_state, segments)) {
     AERROR << "Failed to create reference line from routing";
     return false;
   }
+  // 如果有新指令，或者不使用缝合，则直接平滑
   if (is_new_command_ || !FLAGS_enable_reference_line_stitching) {
     for (auto iter = segments->begin(); iter != segments->end();) {
       reference_lines->emplace_back();
+      // 如果平滑失败，还原数据，清理现场
       if (!SmoothRouteSegment(*iter, &reference_lines->back())) {
         AERROR << "Failed to create reference line from route segments";
         reference_lines->pop_back();
         iter = segments->erase(iter);
-      } else {
+      } 
+      // 如果平滑成功
+      else {
+        // 计算sl坐标。如果失败，说明平滑路径有问题，报错
         common::SLPoint sl;
         if (!reference_lines->back().XYToSL(
                 vehicle_state.heading(),
@@ -669,6 +729,7 @@ bool ReferenceLineProvider::CreateReferenceLine(
           AWARN << "Failed to project point: {" << vehicle_state.x() << ","
                 << vehicle_state.y() << "} to stitched reference line";
         }
+        // 根据形状进行裁剪
         Shrink(sl, &reference_lines->back(), &(*iter));
         ++iter;
       }
@@ -691,9 +752,11 @@ bool ReferenceLineProvider::CreateReferenceLine(
   return true;
 }
 
+//
 bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
                                                 RouteSegments *segments,
                                                 ReferenceLine *reference_line) {
+  // 遍历以往的参考线，寻找连接当前参考线段的段
   RouteSegments segment_properties;
   segment_properties.SetProperties(*segments);
   auto prev_segment = route_segments_.begin();
@@ -705,6 +768,7 @@ bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
     ++prev_segment;
     ++prev_ref;
   }
+  // 如果当前参考线与以往参考线没有连接，则发出警告，只平滑当前参考线
   if (prev_segment == route_segments_.end()) {
     if (!route_segments_.empty() && segments->IsOnSegment()) {
       AWARN << "Current route segment is not connected with previous route "
@@ -712,6 +776,7 @@ bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
     }
     return SmoothRouteSegment(*segments, reference_line);
   }
+  // 尝试将当前位置投影到以往参考线，如果不能，只平滑当前参考线
   common::SLPoint sl_point;
   Vec2d vec2d(state.x(), state.y());
   LaneWaypoint waypoint;
@@ -721,6 +786,7 @@ bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
           << " not on previous reference line";
     return SmoothRouteSegment(*segments, reference_line);
   }
+  // 如果投影位置到目标参考线距离大于理想距离，则不需要延长，直接返回
   const double prev_segment_length = RouteSegments::Length(*prev_segment);
   const double remain_s = prev_segment_length - sl_point.s();
   const double look_forward_required_distance =
@@ -734,6 +800,7 @@ bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
            << " and no need to extend";
     return true;
   }
+  // 
   double future_start_s =
       std::max(sl_point.s(), prev_segment_length -
                                  FLAGS_reference_line_stitch_overlap_distance);
@@ -779,6 +846,7 @@ bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
   return Shrink(sl, reference_line, segments);
 }
 
+// 向前后搜索角度差大于某阈值的点，对参考线进行裁剪
 bool ReferenceLineProvider::Shrink(const common::SLPoint &sl,
                                    ReferenceLine *reference_line,
                                    RouteSegments *segments) {
@@ -786,6 +854,7 @@ bool ReferenceLineProvider::Shrink(const common::SLPoint &sl,
   double new_backward_distance = sl.s();
   double new_forward_distance = reference_line->Length() - sl.s();
   bool need_shrink = false;
+  // 估算后向裁剪距离
   if (sl.s() > planning::FLAGS_look_backward_distance * 1.5) {
     ADEBUG << "reference line back side is " << sl.s()
            << ", shrink reference line: origin length: "
@@ -793,6 +862,7 @@ bool ReferenceLineProvider::Shrink(const common::SLPoint &sl,
     new_backward_distance = planning::FLAGS_look_backward_distance;
     need_shrink = true;
   }
+  // 估算前向裁剪距离
   // check heading
   const auto index = reference_line->GetNearestReferenceIndex(sl.s());
   const auto &ref_points = reference_line->reference_points();
@@ -811,6 +881,7 @@ bool ReferenceLineProvider::Shrink(const common::SLPoint &sl,
     new_forward_distance = forward_sl.s() - sl.s();
   }
 
+  // 再次估算后向距离
   // check backward heading
   last_index = index;
   while (last_index > 0 &&
@@ -825,6 +896,7 @@ bool ReferenceLineProvider::Shrink(const common::SLPoint &sl,
     new_backward_distance = sl.s() - backward_sl.s();
   }
 
+  // 进行裁剪
   if (need_shrink) {
     if (!reference_line->Segment(sl.s(), new_backward_distance,
                                  new_forward_distance)) {
@@ -838,6 +910,7 @@ bool ReferenceLineProvider::Shrink(const common::SLPoint &sl,
   return true;
 }
 
+// 校验平滑后的参考线
 bool ReferenceLineProvider::IsReferenceLineSmoothValid(
     const ReferenceLine &raw, const ReferenceLine &smoothed) const {
   static constexpr double kReferenceLineDiffCheckStep = 10.0;
@@ -845,13 +918,14 @@ bool ReferenceLineProvider::IsReferenceLineSmoothValid(
        s += kReferenceLineDiffCheckStep) {
     auto xy_new = smoothed.GetReferencePoint(s);
 
+    // 如果旧路径无法映射新路径，说明新路径不光滑
     common::SLPoint sl_new;
     if (!raw.XYToSL(xy_new, &sl_new)) {
       AERROR << "Fail to change xy point on smoothed reference line to sl "
                 "point respect to raw reference line.";
       return false;
     }
-
+    // 如果新路径偏离旧路径，则优化过度
     const double diff = std::fabs(sl_new.l());
     if (diff > FLAGS_smoothed_reference_line_max_diff) {
       AERROR << "Fail to provide reference line because too large diff "
@@ -862,12 +936,14 @@ bool ReferenceLineProvider::IsReferenceLineSmoothValid(
   }
   return true;
 }
-
+// 根据道路情况生成路径锚点
 AnchorPoint ReferenceLineProvider::GetAnchorPoint(
     const ReferenceLine &reference_line, double s) const {
   AnchorPoint anchor;
   anchor.longitudinal_bound = smoother_config_.longitudinal_boundary_bound();
   auto ref_point = reference_line.GetReferencePoint(s);
+
+  // 如果转换失败，直接返回
   if (ref_point.lane_waypoints().empty()) {
     anchor.path_point = ref_point.ToPathPoint(s);
     anchor.lateral_bound = smoother_config_.max_lateral_boundary_bound();
@@ -897,6 +973,7 @@ AnchorPoint ReferenceLineProvider::GetAnchorPoint(
     is_lane_width_safe = false;
   }
 
+  // 如果左边是路边，则往右侧移动
   double center_shift = 0.0;
   if (hdmap::RightBoundaryType(waypoint) == hdmap::LaneBoundaryType::CURB) {
     safe_lane_width -= smoother_config_.curb_shift();
@@ -908,6 +985,7 @@ AnchorPoint ReferenceLineProvider::GetAnchorPoint(
       center_shift += 0.5 * smoother_config_.curb_shift();
     }
   }
+  // 如果右侧是路边，则往左侧移动
   if (hdmap::LeftBoundaryType(waypoint) == hdmap::LaneBoundaryType::CURB) {
     safe_lane_width -= smoother_config_.curb_shift();
     if (safe_lane_width < kEpislon) {
@@ -938,6 +1016,7 @@ AnchorPoint ReferenceLineProvider::GetAnchorPoint(
   return anchor;
 }
 
+// 根据路径情况生成锚点
 void ReferenceLineProvider::GetAnchorPoints(
     const ReferenceLine &reference_line,
     std::vector<AnchorPoint> *anchor_points) const {
@@ -960,6 +1039,7 @@ void ReferenceLineProvider::GetAnchorPoints(
   anchor_points->back().enforced = true;
 }
 
+// 数据转换为标准的referenceline，然后平滑
 bool ReferenceLineProvider::SmoothRouteSegment(const RouteSegments &segments,
                                                ReferenceLine *reference_line) {
   hdmap::Path path(segments);
@@ -1010,18 +1090,22 @@ bool ReferenceLineProvider::SmoothPrefixedReferenceLine(
 
 bool ReferenceLineProvider::SmoothReferenceLine(
     const ReferenceLine &raw_reference_line, ReferenceLine *reference_line) {
+  // 如果不允许平滑，直接输出
   if (!FLAGS_enable_smooth_reference_line) {
     *reference_line = raw_reference_line;
     return true;
   }
+  // 生成锚点
   // generate anchor points:
   std::vector<AnchorPoint> anchor_points;
   GetAnchorPoints(raw_reference_line, &anchor_points);
   smoother_->SetAnchorPoints(anchor_points);
+  // 平滑路径
   if (!smoother_->Smooth(raw_reference_line, reference_line)) {
     AERROR << "Failed to smooth reference line with anchor points";
     return false;
   }
+  // 校验目标路径是否有效
   if (!IsReferenceLineSmoothValid(raw_reference_line, *reference_line)) {
     AERROR << "The smoothed reference line error is too large";
     return false;
@@ -1029,6 +1113,7 @@ bool ReferenceLineProvider::SmoothReferenceLine(
   return true;
 }
 
+// debug
 bool ReferenceLineProvider::GetAdcWaypoint(
     hdmap::LaneWaypoint *waypoint) const {
   if (nullptr == current_pnc_map_) {
@@ -1039,6 +1124,7 @@ bool ReferenceLineProvider::GetAdcWaypoint(
   return true;
 }
 
+// debug
 bool ReferenceLineProvider::GetAdcDis2Destination(double *dis) const {
   if (nullptr == current_pnc_map_) {
     AERROR << "Cannot find pnc map to get adc distance to destination!";
