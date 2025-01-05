@@ -31,13 +31,22 @@ class DependencyInjector {
   DependencyInjector() = default;
   ~DependencyInjector() = default;
 
+  // 负责planning上下文缓存，比如是否出发重新路由的ReroutingStatus信息，查看Proto
   PlanningContext* planning_context() { return &planning_context_; }
+
+  // 是一个可索引队列，负责planning的输入、输出等主要信息的缓存，以frame类进行组织，
+  // 内部包含localview结构体（负责输入数据的融合管理）。与history不同的是，
+  // 该缓存数据自模块启动后就开始缓存所有的Frame对象，不受routing变动的影响
   FrameHistory* frame_history() { return &frame_history_; }
+  // 负责障碍物状态的缓存，包括运动状态、决策结果。该数据与routing结果绑定，routing变动后会清理掉历史数据
   History* history() { return &history_; }
+  // 提供车辆动、静信息，即车辆运动状态参数（轨迹、速度、加速度等）和车辆结构参数（长宽高等）
   EgoInfo* ego_info() { return &ego_info_; }
+  // 车辆状态提供器，用于获取车辆实时信息
   apollo::common::VehicleStateProvider* vehicle_state() {
     return &vehicle_state_;
   }
+  // 基于学习的数据，用于学习建模等
   LearningBasedData* learning_based_data() { return &learning_based_data_; }
 
  private:

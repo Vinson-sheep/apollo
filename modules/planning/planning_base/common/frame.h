@@ -204,12 +204,16 @@ class Frame {
   void ResetPadMsgDrivingAction();
 
  private:
+  // 利用pad下发一些指令
   static PadMessage::DrivingAction pad_msg_driving_action_;
   uint32_t sequence_num_ = 0;
+  // 
   LocalView local_view_;
+  // 高精地图
   const hdmap::HDMap *hdmap_ = nullptr;
   common::TrajectoryPoint planning_start_point_;
   common::VehicleState vehicle_state_;
+  // 参考线信息
   std::list<ReferenceLineInfo> reference_line_info_;
 
   bool is_near_destination_ = false;

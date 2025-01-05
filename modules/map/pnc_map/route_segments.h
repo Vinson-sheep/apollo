@@ -187,6 +187,7 @@ class RouteSegments : public std::vector<LaneSegment> {
   /**
    * @brief Copy the properties of other segments to current one
    */
+  // 不复制数据，但复制特性
   void SetProperties(const RouteSegments &other);
 
   static bool WithinLaneSegment(const LaneSegment &lane_segment,

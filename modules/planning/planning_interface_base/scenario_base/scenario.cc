@@ -100,6 +100,7 @@ ScenarioResult Scenario::Process(
     scenario_result_.SetScenarioStatus(ScenarioStatusType::STATUS_DONE);
     return scenario_result_;
   }
+  // frame中包含所有参考线信息，最终轨迹也存在在frame中
   auto ret = current_stage_->Process(planning_init_point, frame);
   scenario_result_.SetStageResult(ret);
   switch (ret.GetStageStatus()) {

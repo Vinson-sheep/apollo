@@ -28,8 +28,11 @@ using apollo::common::TrajectoryPoint;
 Status PublicRoadPlanner::Init(
     const std::shared_ptr<DependencyInjector>& injector,
     const std::string& config_path) {
+  // 
   Planner::Init(injector, config_path);
   LoadConfig<PlannerPublicRoadConfig>(config_path, &config_);
+  // 场景注册
+  // scenario_manager_ 负责实际的场景注册，默认场景是lane_follow
   scenario_manager_.Init(injector, config_);
   return Status::OK();
 }

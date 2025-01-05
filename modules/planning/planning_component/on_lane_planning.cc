@@ -107,23 +107,28 @@ OnLanePlanning::~OnLanePlanning() {
 std::string OnLanePlanning::Name() const { return "on_lane_planning"; }
 
 Status OnLanePlanning::Init(const PlanningConfig& config) {
+  // 检查config文件，在这里不完全，也可以添加其他的检查项
   if (!CheckPlanningConfig(config)) {
     return Status(ErrorCode::PLANNING_ERROR,
                   "planning config error: " + config.DebugString());
   }
-
+  // 在PlanningBase::Init进行初始化，没有执行实质性内容
   PlanningBase::Init(config);
 
+  // 清除路径规划历史信息
   // clear planning history
   injector_->history()->Clear();
 
+  // 清除路径规划上下文状态信息
   // clear planning status
   injector_->planning_context()->mutable_planning_status()->Clear();
 
+  // 加载地图
   // load map
   hdmap_ = HDMapUtil::BaseMapPtr();
   ACHECK(hdmap_) << "Failed to load map";
 
+  // 提取参考线以及平滑优化的主功能入口，重要
   // instantiate reference line provider
   const ReferenceLineConfig* reference_line_config = nullptr;
   if (config_.has_reference_line_config()) {
@@ -131,8 +136,9 @@ Status OnLanePlanning::Init(const PlanningConfig& config) {
   }
   reference_line_provider_ = std::make_unique<ReferenceLineProvider>(
       injector_->vehicle_state(), reference_line_config);
-  reference_line_provider_->Start();
+  reference_line_provider_->Start();  // 独立线程
 
+  // 路径规划调度器
   // dispatch planner
   LoadPlanner();
   if (!planner_) {
@@ -141,6 +147,7 @@ Status OnLanePlanning::Init(const PlanningConfig& config) {
         "planning is not initialized with config : " + config_.DebugString());
   }
 
+  // 学习模式
   if (config_.learning_mode() != PlanningConfig::NO_LEARNING) {
     PlanningSemanticMapConfig renderer_config;
     ACHECK(apollo::cyber::common::GetProtoFromFile(
@@ -155,12 +162,16 @@ Status OnLanePlanning::Init(const PlanningConfig& config) {
   traffic_decider_.Init(injector_);
 
   start_time_ = Clock::NowInSeconds();
+
+  // 进入public_road初始化函数，主方法论
   return planner_->Init(injector_, FLAGS_planner_config_path);
 }
 
+// 初始化frame数据
 Status OnLanePlanning::InitFrame(const uint32_t sequence_num,
                                  const TrajectoryPoint& planning_start_point,
                                  const VehicleState& vehicle_state) {
+  // frame重置空数据
   frame_.reset(new Frame(sequence_num, local_view_, planning_start_point,
                          vehicle_state, reference_line_provider_.get()));
 
@@ -168,6 +179,7 @@ Status OnLanePlanning::InitFrame(const uint32_t sequence_num,
     return Status(ErrorCode::PLANNING_ERROR, "Fail to init frame: nullptr.");
   }
 
+  // 获取参考线和segments
   std::list<ReferenceLine> reference_lines;
   std::list<hdmap::RouteSegments> segments;
   reference_line_provider_->GetReferenceLines(&reference_lines, &segments);
@@ -176,6 +188,7 @@ Status OnLanePlanning::InitFrame(const uint32_t sequence_num,
   auto forward_limit = planning::PncMapBase::LookForwardDistance(
       vehicle_state.linear_velocity());
 
+  // 对每条参考线赋值自车位置
   for (auto& ref_line : reference_lines) {
     ref_line.SetEgoPosition(Vec2d(vehicle_state.x(), vehicle_state.y()));
     if (!ref_line.Segment(Vec2d(vehicle_state.x(), vehicle_state.y()),
@@ -186,6 +199,8 @@ Status OnLanePlanning::InitFrame(const uint32_t sequence_num,
       return Status(ErrorCode::PLANNING_ERROR, msg);
     }
   }
+
+  // 对每个segments进行裁剪
   for (auto& seg : segments) {
     if (!seg.Shrink(Vec2d(vehicle_state.x(), vehicle_state.y()),
                     planning::FLAGS_look_backward_distance, forward_limit)) {
@@ -195,6 +210,7 @@ Status OnLanePlanning::InitFrame(const uint32_t sequence_num,
     }
   }
 
+  // 将参考线和segments装配到frame中
   auto status = frame_->Init(
       injector_->vehicle_state(), reference_lines, segments,
       reference_line_provider_->FutureRouteWaypoints(), injector_->ego_info());
@@ -206,6 +222,7 @@ Status OnLanePlanning::InitFrame(const uint32_t sequence_num,
 }
 
 // TODO(all): fix this! this will cause unexpected behavior from controller
+// 产生刹车轨迹
 void OnLanePlanning::GenerateStopTrajectory(ADCTrajectory* ptr_trajectory_pb) {
   ptr_trajectory_pb->clear_trajectory_point();
 
@@ -215,6 +232,9 @@ void OnLanePlanning::GenerateStopTrajectory(ADCTrajectory* ptr_trajectory_pb) {
 
   TrajectoryPoint tp;
   auto* path_point = tp.mutable_path_point();
+  // 看起来只是频繁复制车辆当前状态
+  // 更新的只有时间t
+  // 对控制器不优化
   path_point->set_x(vehicle_state.x());
   path_point->set_y(vehicle_state.y());
   path_point->set_theta(vehicle_state.heading());
@@ -233,28 +253,30 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
   // when rerouting, reference line might not be updated. In this case, planning
   // module maintains not-ready until be restarted.
   local_view_ = local_view;
-  const double start_timestamp = Clock::NowInSeconds();
-  const double start_system_timestamp =
-      std::chrono::duration<double>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count();
+  // const double start_timestamp = Clock::NowInSeconds();
+  // const double start_system_timestamp =
+  //     std::chrono::duration<double>(
+  //         std::chrono::system_clock::now().time_since_epoch())
+  //         .count();
 
   // localization
-  ADEBUG << "Get localization:"
-         << local_view_.localization_estimate->DebugString();
+  // ADEBUG << "Get localization:"
+  //        << local_view_.localization_estimate->DebugString();
 
   // chassis
-  ADEBUG << "Get chassis:" << local_view_.chassis->DebugString();
+  // ADEBUG << "Get chassis:" << local_view_.chassis->DebugString();
 
+  // 校验和更新车辆状态
   Status status = injector_->vehicle_state()->Update(
       *local_view_.localization_estimate, *local_view_.chassis);
 
   VehicleState vehicle_state = injector_->vehicle_state()->vehicle_state();
-  const double vehicle_state_timestamp = vehicle_state.timestamp();
-  DCHECK_GE(start_timestamp, vehicle_state_timestamp)
-      << "start_timestamp is behind vehicle_state_timestamp by "
-      << start_timestamp - vehicle_state_timestamp << " secs";
+  // const double vehicle_state_timestamp = vehicle_state.timestamp();
+  // DCHECK_GE(start_timestamp, vehicle_state_timestamp)
+  //     << "start_timestamp is behind vehicle_state_timestamp by "
+  //     << start_timestamp - vehicle_state_timestamp << " secs";
 
+  // 如何车辆状态不合法，则产生刹车轨迹
   if (!status.ok() || !util::IsVehicleStateValid(vehicle_state)) {
     const std::string msg =
         "Update VehicleStateProvider failed "
@@ -268,10 +290,12 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
     // TODO(all): integrate reverse gear
     ptr_trajectory_pb->set_gear(canbus::Chassis::GEAR_DRIVE);
     FillPlanningPb(start_timestamp, ptr_trajectory_pb);
+    // 刹车轨迹生成仅复制状态，简单粗暴
     GenerateStopTrajectory(ptr_trajectory_pb);
     return;
   }
 
+  // 
   if (start_timestamp + 1e-6 < vehicle_state_timestamp) {
     common::monitor::MonitorLogBuffer monitor_logger_buffer(
         common::monitor::MonitorMessageItem::PLANNING);
@@ -284,6 +308,7 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
   }
 
   // Update reference line provider and reset scenario if new routing
+  // 如果是新指令，则重置reference_line_provider
   reference_line_provider_->UpdateVehicleState(vehicle_state);
   if (local_view_.planning_command->is_motion_command() &&
       util::IsDifferentRouting(last_command_, *local_view_.planning_command)) {

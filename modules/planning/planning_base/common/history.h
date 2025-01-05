@@ -107,7 +107,9 @@ class History {
   HistoryStatus* mutable_history_status() { return &history_status_; }
 
  private:
+  // 历史目标决策信息，轨迹信息
   std::list<HistoryFrame> history_frames_;
+  // 
   HistoryStatus history_status_;
 };
 

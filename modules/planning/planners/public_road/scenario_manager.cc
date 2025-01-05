@@ -36,6 +36,7 @@ bool ScenarioManager::Init(const std::shared_ptr<DependencyInjector>& injector,
     return true;
   }
   injector_ = injector;
+  // 注册所有场景
   for (int i = 0; i < planner_config.scenario_size(); i++) {
     auto scenario = PluginManager::Instance()->CreateInstance<Scenario>(
         ConfigUtil::GetFullPlanningClassName(
@@ -43,6 +44,7 @@ bool ScenarioManager::Init(const std::shared_ptr<DependencyInjector>& injector,
     ACHECK(scenario->Init(injector_, planner_config.scenario(i).name()))
         << "Can not init scenario" << planner_config.scenario(i).name();
     scenario_list_.push_back(scenario);
+    // 默认场景为lane_follow
     if (planner_config.scenario(i).name() == "LANE_FOLLOW") {
       default_scenario_type_ = scenario;
     }

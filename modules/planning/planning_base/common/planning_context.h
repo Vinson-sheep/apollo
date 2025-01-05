@@ -46,6 +46,7 @@ class PlanningContext {
   PlanningStatus* mutable_planning_status() { return &planning_status_; }
 
  private:
+ // 见planning_status.proto
   PlanningStatus planning_status_;
 };
 

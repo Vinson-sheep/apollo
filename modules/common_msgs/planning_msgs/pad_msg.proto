@@ -9,12 +9,12 @@ message PadMessage {
 
   enum DrivingAction {
     NONE = 100;
-    FOLLOW = 0;
-    CHANGE_LEFT = 1;
-    CHANGE_RIGHT = 2;
-    PULL_OVER = 3;
-    STOP = 4;
-    RESUME_CRUISE = 5;
+    FOLLOW = 0; // 跟车
+    CHANGE_LEFT = 1;  // 左侧变道
+    CHANGE_RIGHT = 2; // 右侧变道
+    PULL_OVER = 3;    // 靠边停车
+    STOP = 4;         // 刹车
+    RESUME_CRUISE = 5;  // 恢复巡航
     CLEAR_PLANNING = 6;
     // Enter mission model
     ENTER_MISSION = 7;

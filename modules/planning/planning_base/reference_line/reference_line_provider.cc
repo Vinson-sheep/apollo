@@ -136,6 +136,7 @@ bool ReferenceLineProvider::UpdatePlanningCommand(
   std::lock_guard<std::mutex> lock(pnc_map_mutex_);
   if (current_pnc_map_->IsNewPlanningCommand(command)) {
     is_new_command_ = true;
+    // command中包含多条routing路径
     if (!current_pnc_map_->UpdatePlanningCommand(command)) {
       AERROR << "Failed to update routing in pnc map: "
              << command.DebugString();
@@ -181,15 +182,17 @@ void ReferenceLineProvider::UpdateVehicleState(
   vehicle_state_ = vehicle_state;
 }
 
+// 参考线生成器开始函数
 bool ReferenceLineProvider::Start() {
   if (FLAGS_use_navigation_mode) {
     return true;
   }
+  // 
   if (!is_initialized_) {
     AERROR << "ReferenceLineProvider has NOT been initiated.";
     return false;
   }
-
+  // 进入参考线生成线程
   if (FLAGS_enable_reference_line_provider_thread) {
     task_future_ = cyber::Async(&ReferenceLineProvider::GenerateThread, this);
   }
@@ -276,24 +279,34 @@ void ReferenceLineProvider::UpdateReferenceLine(
 
 // 还要特地创造线程？
 void ReferenceLineProvider::GenerateThread() {
+  // is_stop_是一个atomic参数在ReferenceLineProvider::Stop()设置为true
   while (!is_stop_) {
     static constexpr int32_t kSleepTime = 50;  // milliseconds
     cyber::SleepFor(std::chrono::milliseconds(kSleepTime));
+    // 计算起始时间
     const double start_time = Clock::NowInSeconds();
+    // 
     if (!has_planning_command_) {
       continue;
     }
+    // 路径点信息集
     std::list<ReferenceLine> reference_lines;
+    // LaneInfo信息集
     std::list<hdmap::RouteSegments> segments;
     if (!CreateReferenceLine(&reference_lines, &segments)) {
+      // 创建参考线失败 is_reference_line_updated_ 为atomic参数
       is_reference_line_updated_ = false;
       AERROR << "Fail to get reference line";
       continue;
     }
+    // 更新参考线
     UpdateReferenceLine(reference_lines, segments);
+    // 计算终止时间
     const double end_time = Clock::NowInSeconds();
     std::lock_guard<std::mutex> lock(reference_lines_mutex_);
+    // 计算参考线生成程序耗时
     last_calculation_time_ = end_time - start_time;
+    // 参考线更新成功 std::atomic<bool>
     is_reference_line_updated_ = true;
   }
 }
@@ -309,7 +322,8 @@ double ReferenceLineProvider::LastTimeDelay() {
   }
 }
 
-// 
+// 最核心的函数
+// 根据relative_map或者pnc_map计算参考线
 bool ReferenceLineProvider::GetReferenceLines(
     std::list<ReferenceLine> *reference_lines,
     std::list<hdmap::RouteSegments> *segments) {
@@ -319,7 +333,8 @@ bool ReferenceLineProvider::GetReferenceLines(
     return true;
   }
 
-  // 从地图中获取参考线和车道段，并更新其内容
+  // 从relative_map地图中获取参考线和车道段，并更新其内容
+  // 这个过程没有涉及任何平滑？
   if (FLAGS_use_navigation_mode) {
     double start_time = Clock::NowInSeconds();
     bool result = GetReferenceLinesFromRelativeMap(reference_lines, segments);
@@ -340,7 +355,8 @@ bool ReferenceLineProvider::GetReferenceLines(
       return true;
     }
   } 
-  // 否则，生成一条参考线
+  // 否则，基于Pnc地图生成一条参考线
+  // 这个过程涉及平滑
   else {
     double start_time = Clock::NowInSeconds();
     if (CreateReferenceLine(reference_lines, segments)) {
@@ -366,13 +382,16 @@ bool ReferenceLineProvider::GetReferenceLines(
   return true;
 }
 
-// 
+// 首先获取第一条参考线的迭代器，然后遍历所有的参考线
+// 如果当前的参考线为允许变道参考线，则将第一条参考线更换为当前迭代器所指向的参考线
+// 注意，可变车道为按迭代器的顺序求取，一旦发现可变车道，即退出循环
 void ReferenceLineProvider::PrioritizeChangeLane(
     std::list<hdmap::RouteSegments> *route_segments) {
   CHECK_NOTNULL(route_segments);
   auto iter = route_segments->begin();
   while (iter != route_segments->end()) {
-    if (!iter->IsOnSegment()) {
+    if (!iter->IsOnSegment()) { // 如果当前的参考线为允许变道参考线
+      // 则将第一条参考线更换为当前迭代器所指的参考线
       route_segments->splice(route_segments->begin(), *route_segments, iter);
       break;
     }
@@ -381,6 +400,7 @@ void ReferenceLineProvider::PrioritizeChangeLane(
 }
 
 // 基于高清地图和当前车道信息计算参考线
+// 这里的relative_map只是一个指针，似乎是个数据体而已，不是具体的地图
 bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
     std::list<ReferenceLine> *reference_lines,
     std::list<hdmap::RouteSegments> *segments) {
@@ -399,7 +419,7 @@ bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
     return false;
   }
 
-  // 获取附近的车道线
+  // 获取车辆行驶中的的车道线
   // 1.get adc current lane info ,such as lane_id,lane_priority,neighbor lanes
   std::unordered_set<std::string> navigation_lane_ids;
   for (const auto &path_pair : relative_map_->navigation_path()) {
@@ -681,19 +701,19 @@ bool ReferenceLineProvider::CreateRouteSegments(
   return !segments->empty();
 }
 
-// 
+// reference_lines和segments其实是参考线不同的表征
 bool ReferenceLineProvider::CreateReferenceLine(
     std::list<ReferenceLine> *reference_lines,
     std::list<hdmap::RouteSegments> *segments) {
   CHECK_NOTNULL(reference_lines);
   CHECK_NOTNULL(segments);
-
+  // 获取自车当前车辆状态，也就是定位位置
   common::VehicleState vehicle_state;
   {
     std::lock_guard<std::mutex> lock(vehicle_state_mutex_);
     vehicle_state = vehicle_state_;
   }
-
+  // 获取routing内容
   planning::PlanningCommand command;
   {
     std::lock_guard<std::mutex> lock(routing_mutex_);

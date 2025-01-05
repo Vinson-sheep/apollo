@@ -36,6 +36,8 @@ bool WithinRange(const T v, const T lower, const T upper) {
 ConstraintChecker::Result ConstraintChecker::ValidTrajectory(
     const DiscretizedTrajectory& trajectory) {
   const double kMaxCheckRelativeTime = FLAGS_trajectory_time_length;
+  // 遍历轨迹上所有的离散点
+  // 检查横纵向速度、加速度、加加速度和曲率
   for (const auto& p : trajectory) {
     double t = p.relative_time();
     if (t > kMaxCheckRelativeTime) {

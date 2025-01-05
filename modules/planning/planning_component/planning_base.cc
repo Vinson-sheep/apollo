@@ -42,6 +42,7 @@ PlanningBase::PlanningBase(const std::shared_ptr<DependencyInjector>& injector)
 PlanningBase::~PlanningBase() {}
 
 Status PlanningBase::Init(const PlanningConfig& config) {
+  // planning上下文初始化，暂时没有执行任何内容，空函数
   injector_->planning_context()->Init();
   config_ = config;
   return Status::OK();

@@ -180,20 +180,36 @@ message LaneBorrowStatus {
 
 // note: please keep this one as minimal as possible. do NOT pollute it.
 message PlanningStatus {
+  // 裸露交叉路口 -- 无交通信号灯
   optional ChangeLaneStatus change_lane = 2;
+  // 变道状态
   optional CreepDeciderStatus creep_decider = 3;
+  // 爬行决策状态
   optional CrosswalkStatus crosswalk = 4;
+  // 目的地状态
   optional DestinationStatus destination = 5;
+  // 紧急停车状态
   optional EmergencyStopStatus emergency_stop = 6;
+  // 开放空间状态
   optional OpenSpaceStatus open_space = 7;
+  // 停车即走状态
+  // 这种情况主要针对路边送货或乘客接送等情况，该方案将Open Space Planner与其他传统轨迹规划器结合在一起
   optional ParkAndGoStatus park_and_go = 8;
+  // 道路决策状态
   optional PathDeciderStatus path_decider = 9;
+  // 靠边停车状态
   optional PullOverStatus pull_over = 10;
+  // 重新申请路由状态
   optional ReroutingStatus rerouting = 11;
+  // 场景状态
   optional ScenarioStatus scenario = 12;
+  // 速度决策状态
   optional SpeedDeciderStatus speed_decider = 13;
+  // 停止标识状态
   optional StopSignStatus stop_sign = 14;
+  // 交通信号灯状态
   optional TrafficLightStatus traffic_light = 15;
+  // 让行标识状态
   optional YieldSignStatus yield_sign = 16;
   optional LaneFollowStatus lane_follow = 17;
   optional LaneBorrowStatus lane_borrow = 18;

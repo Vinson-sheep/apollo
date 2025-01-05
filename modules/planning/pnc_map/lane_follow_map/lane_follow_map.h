@@ -179,13 +179,13 @@ class LaneFollowMap : public PncMapBase {
     apollo::hdmap::LaneSegment segment;
     std::array<int, 3> index;
   };
-  std::vector<RouteIndex> route_indices_;
+  std::vector<RouteIndex> route_indices_;   // road index, passage index, lane index 道路索引
   int range_start_ = 0;
   int range_end_ = 0;
   // routing ids in range
-  std::unordered_set<std::string> range_lane_ids_;
-  std::unordered_set<std::string> all_lane_ids_;
-  std::unordered_set<std::string> route_segments_lane_ids_;
+  std::unordered_set<std::string> range_lane_ids_;  // 根据adc_index(当前车辆位置)更新车辆id范围
+  std::unordered_set<std::string> all_lane_ids_;    // 收集所有地图中routing request获得的车道ID
+  std::unordered_set<std::string> route_segments_lane_ids_; // 
 
   /**
    * The routing request waypoints

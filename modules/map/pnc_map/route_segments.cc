@@ -195,6 +195,7 @@ bool RouteSegments::Shrink(const double s, const double look_backward,
   return Shrink(s, waypoint, look_backward, look_forward);
 }
 
+// 就是删除给定区间外的路径
 bool RouteSegments::Shrink(const double s, const LaneWaypoint &waypoint,
                            const double look_backward,
                            const double look_forward) {
@@ -359,15 +360,18 @@ bool RouteSegments::IsWaypointOnSegment(const LaneWaypoint &waypoint) const {
   return false;
 }
 
+// 
 bool RouteSegments::CanDriveFrom(const LaneWaypoint &waypoint) const {
   auto point = waypoint.lane->GetSmoothPoint(waypoint.s);
 
   // 0 if waypoint is on segment, ok
+  // 判断waypoint是否在RouteSegments上
   if (IsWaypointOnSegment(waypoint)) {
     return true;
   }
 
   // 1. should have valid projection.
+  // 根据point计算在RouteSegments上的投影信息sl和waypoint
   LaneWaypoint segment_waypoint;
   common::SLPoint route_sl;
   bool has_projection = GetProjection(point, &route_sl, &segment_waypoint);
@@ -375,11 +379,14 @@ bool RouteSegments::CanDriveFrom(const LaneWaypoint &waypoint) const {
     AERROR << "No projection from waypoint: " << waypoint.DebugString();
     return false;
   }
+  // 如果横向距离大于20m，那么不可驶入
   static constexpr double kMaxLaneWidth = 10.0;
   if (std::fabs(route_sl.l()) > 2 * kMaxLaneWidth) {
     return false;
   }
-
+  
+  // 检测当前车辆所在车道和投影到passage中对应的LaneSegment所属车道方向是否一致。必须
+  // 小于90度，否则就是反向车道，不能直接驶入
   // 2. heading should be the same.
   double waypoint_heading = waypoint.lane->Heading(waypoint.s);
   double segment_heading = segment_waypoint.lane->Heading(segment_waypoint.s);
@@ -390,6 +397,8 @@ bool RouteSegments::CanDriveFrom(const LaneWaypoint &waypoint) const {
     return false;
   }
 
+  // 当前车辆所在车道和投影到passage中对应的LaneSegment所属车道必须是相邻的，不能跨车道驶入
+  // 每次只能变道一次，无法连续变道
   // 3. the waypoint and the projected lane should not be separated apart.
   double waypoint_left_width = 0.0;
   double waypoint_right_width = 0.0;

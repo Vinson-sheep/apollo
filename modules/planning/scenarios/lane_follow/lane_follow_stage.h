@@ -45,14 +45,14 @@ class LaneFollowStage : public Stage {
       const common::TrajectoryPoint& planning_start_point, Frame* frame,
       ReferenceLineInfo* reference_line_info);
 
-  void PlanFallbackTrajectory(
-      const common::TrajectoryPoint& planning_start_point, Frame* frame,
-      ReferenceLineInfo* reference_line_info);
+//   void PlanFallbackTrajectory(
+//       const common::TrajectoryPoint& planning_start_point, Frame* frame,
+//       ReferenceLineInfo* reference_line_info);
 
   common::SLPoint GetStopSL(const ObjectStop& stop_decision,
                             const ReferenceLine& reference_line) const;
 
-  void RecordObstacleDebugInfo(ReferenceLineInfo* reference_line_info);
+//   void RecordObstacleDebugInfo(ReferenceLineInfo* reference_line_info);
 };
 
 CYBER_PLUGIN_MANAGER_REGISTER_PLUGIN(apollo::planning::LaneFollowStage, Stage)
