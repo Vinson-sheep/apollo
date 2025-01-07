@@ -39,6 +39,7 @@ bool DiscretePointsReferenceLineSmoother::Smooth(
   std::vector<std::pair<double, double>> raw_point2d;
   std::vector<double> anchorpoints_lateralbound;
 
+  // 循环遍历锚点，添加到raw_point2d，添加锚点横向边界
   for (const auto& anchor_point : anchor_points_) {
     raw_point2d.emplace_back(anchor_point.path_point.x(),
                              anchor_point.path_point.y());
@@ -47,13 +48,14 @@ bool DiscretePointsReferenceLineSmoother::Smooth(
 
   // fix front and back points to avoid end states deviate from the center of
   // road
+  // 将起始点和终点航向边界固定为0，避免终点状态偏离中心道路
   anchorpoints_lateralbound.front() = 0.0;
   anchorpoints_lateralbound.back() = 0.0;
-
+  // 正则化points，减去起始点
   NormalizePoints(&raw_point2d);
 
   bool status = false;
-
+  // 配置文件选择FEM_POS_DEVIATION_SMOOTHING优化方法
   const auto& smoothing_method = config_.discrete_points().smoothing_method();
   std::vector<std::pair<double, double>> smoothed_point2d;
   switch (smoothing_method) {
@@ -62,6 +64,7 @@ bool DiscretePointsReferenceLineSmoother::Smooth(
                               &smoothed_point2d);
       break;
     case DiscretePointsSmootherConfig::FEM_POS_DEVIATION_SMOOTHING:
+      // B站搜索[忠厚老实的老王]
       status = FemPosSmooth(raw_point2d, anchorpoints_lateralbound,
                             &smoothed_point2d);
       break;
@@ -74,19 +77,20 @@ bool DiscretePointsReferenceLineSmoother::Smooth(
     AERROR << "discrete_points reference line smoother fails";
     return false;
   }
-
+  // 还原优化的点，之前是与起始点做了差值
   DeNormalizePoints(&smoothed_point2d);
 
   std::vector<ReferencePoint> ref_points;
+  // 生成参考点，原始参考线+优化的点 --> 参考点
   GenerateRefPointProfile(raw_reference_line, smoothed_point2d, &ref_points);
-
+  // 移除重复点
   ReferencePoint::RemoveDuplicates(&ref_points);
 
   if (ref_points.size() < 2) {
     AERROR << "Fail to generate smoothed reference line.";
     return false;
   }
-
+  // 生成参考线
   *smoothed_reference_line = ReferenceLine(ref_points);
   return true;
 }
@@ -132,6 +136,7 @@ bool DiscretePointsReferenceLineSmoother::CosThetaSmooth(
   return true;
 }
 
+// 采用热启动
 bool DiscretePointsReferenceLineSmoother::FemPosSmooth(
     const std::vector<std::pair<double, double>>& raw_point2d,
     const std::vector<double>& bounds,
@@ -142,13 +147,14 @@ bool DiscretePointsReferenceLineSmoother::FemPosSmooth(
   FemPosDeviationSmoother smoother(fem_pos_config);
 
   // box contraints on pos are used in fem pos smoother, thus shrink the
-  // bounds by 1.0 / sqrt(2.0)
+  // bounds by 1.0 / sqrt(2.0) 缩减边界
   std::vector<double> box_bounds = bounds;
   const double box_ratio = 1.0 / std::sqrt(2.0);
   for (auto& bound : box_bounds) {
     bound *= box_ratio;
   }
 
+  // 进入优化求解
   std::vector<double> opt_x;
   std::vector<double> opt_y;
   bool status = smoother.Solve(raw_point2d, box_bounds, &opt_x, &opt_y);
@@ -221,23 +227,28 @@ bool DiscretePointsReferenceLineSmoother::GenerateRefPointProfile(
 
   // Load into ReferencePoints
   size_t points_size = xy_points.size();
+  // 循环遍历点
   for (size_t i = 0; i < points_size; ++i) {
     common::SLPoint ref_sl_point;
     if (!raw_reference_line.XYToSL({xy_points[i].first, xy_points[i].second},
                                    &ref_sl_point)) {
       return false;
     }
+    // 超出边界跳过
     const double kEpsilon = 1e-6;
     if (ref_sl_point.s() < -kEpsilon ||
         ref_sl_point.s() > raw_reference_line.Length()) {
       continue;
     }
+    // 设置s
     ref_sl_point.set_s(std::max(ref_sl_point.s(), 0.0));
+    // 获取参考点
     ReferencePoint rlp = raw_reference_line.GetReferencePoint(ref_sl_point.s());
     auto new_lane_waypoints = rlp.lane_waypoints();
     for (auto& lane_waypoint : new_lane_waypoints) {
       lane_waypoint.l = ref_sl_point.l();
     }
+    // 最终生成reference_points
     reference_points->emplace_back(ReferencePoint(
         hdmap::MapPathPoint(
             common::math::Vec2d(xy_points[i].first, xy_points[i].second),

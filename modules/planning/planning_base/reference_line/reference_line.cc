@@ -74,43 +74,57 @@ bool ReferenceLine::Stitch(const ReferenceLine& other) {
     AWARN << "The other reference line is empty.";
     return true;
   }
+  // 在这里Reference_points是指截取的参考线(也就是shifted_segments对应优化的参考线)
+  // other是上一帧的参考线，它们之间做拼接
+  // 提取当前参考点的第一个点
   auto first_point = reference_points_.front();
+  // 计算截取参考线（也就是shifted_segments对应的参考线）的第一个点在Other上的sl，计算失败则返回
   common::SLPoint first_sl;
   if (!other.XYToSL(first_point, &first_sl)) {
     AWARN << "Failed to project the first point to the other reference line.";
     return false;
   }
+  // 判断第一个点是否在other上，s值大于0 小于other总长度
   bool first_join = first_sl.s() > 0 && first_sl.s() < other.Length();
-
+  // 获取截取参考线的最后一个点
   auto last_point = reference_points_.back();
+  // 计算截取参考线（也就是shifted_segments对应优化的参考线）的最后一个点在other上的sl，如果计算失败则返回
   common::SLPoint last_sl;
   if (!other.XYToSL(last_point, &last_sl)) {
     AWARN << "Failed to project the last point to the other reference line.";
     return false;
   }
+  // 判断最后一个点是否在other上，s值大于0 小于other的总长度
   bool last_join = last_sl.s() > 0 && last_sl.s() < other.Length();
-
+  // 如果第一个点和最后一个点都不在other上，返回false
   if (!first_join && !last_join) {
     AERROR << "These reference lines are not connected.";
     return false;
   }
-
+  // 获取other的accumulated_s累积s数组
   const auto& accumulated_s = other.map_path().accumulated_s();
+  // 获取accumulated_s第一个s值
   const auto& other_points = other.reference_points();
+  // 获取accumulated_s第一个s值
   auto lower = accumulated_s.begin();
   static constexpr double kStitchingError = 1e-1;
+  // 如果截取参考线第一个点在other内，计算横向偏差距离偏差，如果过大，则拼接失败
   if (first_join) {
     if (first_sl.l() > kStitchingError) {
       AERROR << "lateral stitching error on first join of reference line too "
                 "big, stitching fails";
       return false;
     }
+    // 根据截取参考线的第一个点s值获取other上accumated_s数据中对应的迭代器
     lower = std::lower_bound(accumulated_s.begin(), accumulated_s.end(),
                              first_sl.s());
+    // 根据lower计算索引值
     size_t start_i = std::distance(accumulated_s.begin(), lower);
+    // 进行拼接，获取other的起始位置到第一个点的位置数据插入截取参考线的位置
     reference_points_.insert(reference_points_.begin(), other_points.begin(),
                              other_points.begin() + start_i);
   }
+  // 如果截取参考线终点在other上
   if (last_join) {
     if (last_sl.l() > kStitchingError) {
       AERROR << "lateral stitching error on first join of reference line too "

@@ -728,18 +728,18 @@ bool ReferenceLineProvider::CreateReferenceLine(
     AERROR << "Failed to create reference line from routing";
     return false;
   }
-  // 如果有新指令，或者不使用缝合，则直接平滑
+  // 如果有新routing，或者不使用参考线拼接
   if (is_new_command_ || !FLAGS_enable_reference_line_stitching) {
     for (auto iter = segments->begin(); iter != segments->end();) {
       reference_lines->emplace_back();
-      // 如果平滑失败，还原数据，清理现场
+      // 如果优化失败，则剔除
       if (!SmoothRouteSegment(*iter, &reference_lines->back())) {
         AERROR << "Failed to create reference line from route segments";
         reference_lines->pop_back();
         iter = segments->erase(iter);
       } 
-      // 如果平滑成功
       else {
+        // 参考线优化成功
         // 计算sl坐标。如果失败，说明平滑路径有问题，报错
         common::SLPoint sl;
         if (!reference_lines->back().XYToSL(
@@ -749,14 +749,14 @@ bool ReferenceLineProvider::CreateReferenceLine(
           AWARN << "Failed to project point: {" << vehicle_state.x() << ","
                 << vehicle_state.y() << "} to stitched reference line";
         }
-        // 根据形状进行裁剪
+        // 收缩参考线和segment
         Shrink(sl, &reference_lines->back(), &(*iter));
         ++iter;
       }
     }
     is_new_command_ = false;
     return true;
-  } else {  // stitching reference line
+  } else {  // stitching reference line 参考线拼接
     for (auto iter = segments->begin(); iter != segments->end();) {
       reference_lines->emplace_back();
       if (!ExtendReferenceLine(vehicle_state, &(*iter),
@@ -772,23 +772,34 @@ bool ReferenceLineProvider::CreateReferenceLine(
   return true;
 }
 
-//
+// 参考线连接 扩展参考线
+// 其主要功能在于每一帧的规划大多数情况下参考线的很大一部分区域是可以复用的，这样只需要对
+// 这帧延长的部分加入进上一帧的参考线即可。拼接的好处在于一是减少许多的重复计算，参考线
+// 的平滑的优化变量越多就越耗时，只对延长部分进行平滑操作显然节省了大量的计算时间；另一
+// 方面在于保证参考线的稳定性，作为后续优化算法的重要基础，参考线前后帧的稳定性非常重要，
+// 拼接可以减少后续轨迹层的跳变。
 bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
                                                 RouteSegments *segments,
                                                 ReferenceLine *reference_line) {
   // 遍历以往的参考线，寻找连接当前参考线段的段
+  // 设置属性
   RouteSegments segment_properties;
   segment_properties.SetProperties(*segments);
+  // 提取上一帧std::list<hdmap::RouteSegment>的begin数据
   auto prev_segment = route_segments_.begin();
+  // 提取上一帧std::list<ReferenceLine>的begin数据
   auto prev_ref = reference_lines_.begin();
   while (prev_segment != route_segments_.end()) {
+    // 判断上一帧的数据哪个passage与当前计算出来的RouteSegments是否是连接的segments，
+    // 互相检查起始点和终点是否在彼此的路径
+    // 如果在，则直接退出循环，说明两条passage是匹配的，那么将其记录下来
     if (prev_segment->IsConnectedSegment(*segments)) {
       break;
     }
     ++prev_segment;
     ++prev_ref;
   }
-  // 如果当前参考线与以往参考线没有连接，则发出警告，只平滑当前参考线
+  // 如果检查到最后上一周期的参考线与新的都不连接，则直接优化更新
   if (prev_segment == route_segments_.end()) {
     if (!route_segments_.empty() && segments->IsOnSegment()) {
       AWARN << "Current route segment is not connected with previous route "
@@ -796,7 +807,7 @@ bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
     }
     return SmoothRouteSegment(*segments, reference_line);
   }
-  // 尝试将当前位置投影到以往参考线，如果不能，只平滑当前参考线
+  // 用当前车辆位置在上一帧route_segments中计算投影点，若计算失败则平滑后返回
   common::SLPoint sl_point;
   Vec2d vec2d(state.x(), state.y());
   LaneWaypoint waypoint;
@@ -806,11 +817,14 @@ bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
           << " not on previous reference line";
     return SmoothRouteSegment(*segments, reference_line);
   }
-  // 如果投影位置到目标参考线距离大于理想距离，则不需要延长，直接返回
+  // 计算RouteSegments长度
   const double prev_segment_length = RouteSegments::Length(*prev_segment);
+  // 计算在上一帧参考线的剩余距离
   const double remain_s = prev_segment_length - sl_point.s();
+  // 根据当前车速计算预瞄距离
   const double look_forward_required_distance =
       planning::PncMapBase::LookForwardDistance(state.linear_velocity());
+  // 如果剩余距离大于预瞄距离，则不需要优化，直接将上一帧率数据赋值给当前数据
   if (remain_s > look_forward_required_distance) {
     *segments = *prev_segment;
     segments->SetProperties(segment_properties);
@@ -820,14 +834,18 @@ bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
            << " and no need to extend";
     return true;
   }
-  // 
+  // 剩余距离小于预瞄距离
+  // future_start_s，上一帧车辆位置的s与(上一帧参考长度 - 20) 取大
+  // 如果sl_point.s()大，说明车辆已经驶出上一帧车道
   double future_start_s =
       std::max(sl_point.s(), prev_segment_length -
                                  FLAGS_reference_line_stitch_overlap_distance);
+  // future_end_s，上一帧参考长度 + 50
   double future_end_s =
       prev_segment_length + FLAGS_look_forward_extend_distance;
   RouteSegments shifted_segments;
   std::unique_lock<std::mutex> lock(pnc_map_mutex_);
+  // 调用pnc_map下的ExtendSegments函数，对route_segments查找前继及后继车道，从而实现道路段拓展
   if (!current_pnc_map_->ExtendSegments(*prev_segment, future_start_s,
                                         future_end_s, &shifted_segments)) {
     lock.unlock();
@@ -835,6 +853,8 @@ bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
     return SmoothRouteSegment(*segments, reference_line);
   }
   lock.unlock();
+  // 如果扩展扩展后的route_segments的最后一个点还在上一帧的route_segments上，则直接将上一帧的
+  // route_segments返回
   if (prev_segment->IsWaypointOnSegment(shifted_segments.LastWaypoint())) {
     *segments = *prev_segment;
     segments->SetProperties(segment_properties);
@@ -844,10 +864,12 @@ bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
   }
   hdmap::Path path(shifted_segments);
   ReferenceLine new_ref(path);
+  // 平滑前置被强制锁定的referenceline，即上一帧重复的点无需再重复平滑了
   if (!SmoothPrefixedReferenceLine(*prev_ref, new_ref, reference_line)) {
     AWARN << "Failed to smooth forward shifted reference line";
     return SmoothRouteSegment(*segments, reference_line);
   }
+  // 拼接参考线
   if (!reference_line->Stitch(*prev_ref)) {
     AWARN << "Failed to stitch reference line";
     return SmoothRouteSegment(*segments, reference_line);
@@ -863,10 +885,11 @@ bool ReferenceLineProvider::ExtendReferenceLine(const VehicleState &state,
     AWARN << "Failed to project point: " << vec2d.DebugString()
           << " to stitched reference line";
   }
+  // 收缩参考线，主要针对U型弯等曲率过大的弯道，收缩至角度与当前路点航向角的差在5/6 PI之内
   return Shrink(sl, reference_line, segments);
 }
 
-// 向前后搜索角度差大于某阈值的点，对参考线进行裁剪
+// 收缩参考线，主要针对U型弯等曲率过大的弯道，收缩至角度与当前路点航向角的差在5/6 PI之内
 bool ReferenceLineProvider::Shrink(const common::SLPoint &sl,
                                    ReferenceLine *reference_line,
                                    RouteSegments *segments) {
@@ -874,7 +897,7 @@ bool ReferenceLineProvider::Shrink(const common::SLPoint &sl,
   double new_backward_distance = sl.s();
   double new_forward_distance = reference_line->Length() - sl.s();
   bool need_shrink = false;
-  // 估算后向裁剪距离
+  // 收缩参考线
   if (sl.s() > planning::FLAGS_look_backward_distance * 1.5) {
     ADEBUG << "reference line back side is " << sl.s()
            << ", shrink reference line: origin length: "
@@ -960,20 +983,25 @@ bool ReferenceLineProvider::IsReferenceLineSmoothValid(
 AnchorPoint ReferenceLineProvider::GetAnchorPoint(
     const ReferenceLine &reference_line, double s) const {
   AnchorPoint anchor;
+  // 获取纵向边界
   anchor.longitudinal_bound = smoother_config_.longitudinal_boundary_bound();
   auto ref_point = reference_line.GetReferencePoint(s);
 
-  // 如果转换失败，直接返回
+  // 如果lane_waypoints为空
   if (ref_point.lane_waypoints().empty()) {
     anchor.path_point = ref_point.ToPathPoint(s);
+    // 根据配置文件获取横向边界
     anchor.lateral_bound = smoother_config_.max_lateral_boundary_bound();
     return anchor;
   }
 
+  // 根据配置文件获取车辆宽度
   const double adc_width =
       VehicleConfigHelper::GetConfig().vehicle_param().width();
+  // 创建单位向量，垂直点航向角度
   const Vec2d left_vec =
       Vec2d::CreateUnitVec2d(ref_point.heading() + M_PI / 2.0);
+  // 根据waypoint获取车道左侧和右侧边界宽度
   auto waypoint = ref_point.lane_waypoints().front();
   double left_width = 0.0;
   double right_width = 0.0;
@@ -982,9 +1010,11 @@ AnchorPoint ReferenceLineProvider::GetAnchorPoint(
   double effective_width = 0.0;
 
   // shrink width by vehicle width, curb
+  // 根据车辆宽度收缩边界宽度
   double safe_lane_width = left_width + right_width;
+  // 减去车辆宽度
   safe_lane_width -= adc_width;
-  bool is_lane_width_safe = true;
+  bool is_lane_width_safe = true; // 车道宽度是否安全
 
   if (safe_lane_width < kEpislon) {
     ADEBUG << "lane width [" << left_width + right_width << "] "
@@ -993,19 +1023,22 @@ AnchorPoint ReferenceLineProvider::GetAnchorPoint(
     is_lane_width_safe = false;
   }
 
-  // 如果左边是路边，则往右侧移动
+  // 中心偏移
   double center_shift = 0.0;
+  // 如果是右侧边界马路牙子
   if (hdmap::RightBoundaryType(waypoint) == hdmap::LaneBoundaryType::CURB) {
+    // 如果有马路牙子，则减去相应阈值
     safe_lane_width -= smoother_config_.curb_shift();
     if (safe_lane_width < kEpislon) {
       ADEBUG << "lane width smaller than adc width and right curb shift";
       effective_width = kEpislon;
       is_lane_width_safe = false;
     } else {
+      // 中心偏移0.1
       center_shift += 0.5 * smoother_config_.curb_shift();
     }
   }
-  // 如果右侧是路边，则往左侧移动
+  // 如果是左侧边界马路牙子
   if (hdmap::LeftBoundaryType(waypoint) == hdmap::LaneBoundaryType::CURB) {
     safe_lane_width -= smoother_config_.curb_shift();
     if (safe_lane_width < kEpislon) {
@@ -1016,23 +1049,24 @@ AnchorPoint ReferenceLineProvider::GetAnchorPoint(
       center_shift -= 0.5 * smoother_config_.curb_shift();
     }
   }
-
+  // 安全余量
   //  apply buffer if possible
   const double buffered_width =
-      safe_lane_width - 2.0 * smoother_config_.lateral_buffer();
+      safe_lane_width - 2.0 * smoother_config_.lateral_buffer(); // 0.2
   safe_lane_width =
-      buffered_width < kEpislon ? safe_lane_width : buffered_width;
+      buffered_width < kEpislon ? safe_lane_width : buffered_width; // 安全车道宽度选择
 
+  // 根据车道宽度做中心偏移
   // shift center depending on the road width
   if (is_lane_width_safe) {
     effective_width = 0.5 * safe_lane_width;
   }
-
+  // 将参考点做中心偏移
   ref_point += left_vec * center_shift;
   anchor.path_point = ref_point.ToPathPoint(s);
   anchor.lateral_bound = common::math::Clamp(
-      effective_width, smoother_config_.min_lateral_boundary_bound(),
-      smoother_config_.max_lateral_boundary_bound());
+      effective_width, smoother_config_.min_lateral_boundary_bound(), // 0.1
+      smoother_config_.max_lateral_boundary_bound()); // 0.5
   return anchor;
 }
 
@@ -1042,15 +1076,22 @@ void ReferenceLineProvider::GetAnchorPoints(
     std::vector<AnchorPoint> *anchor_points) const {
   CHECK_NOTNULL(anchor_points);
   const double interval = smoother_config_.max_constraint_interval();
+
+  // 根据参考线的长度及采样间隔获取锚点个数
   int num_of_anchors =
       std::max(2, static_cast<int>(reference_line.Length() / interval + 0.5));
   std::vector<double> anchor_s;
+  // 将参考线length按照anchors点数等距离分割，添加anchor_s
   common::util::uniform_slice(0.0, reference_line.Length(), num_of_anchors - 1,
                               &anchor_s);
+  // 循环遍历anchor_s
   for (const double s : anchor_s) {
+    // 根据anchor_s获取锚点，添加横纵向边界
     AnchorPoint anchor = GetAnchorPoint(reference_line, s);
+    // 添加锚点
     anchor_points->emplace_back(anchor);
   }
+  // 起始和终止锚点横纵向边界，强制约束
   anchor_points->front().longitudinal_bound = 1e-6;
   anchor_points->front().lateral_bound = 1e-6;
   anchor_points->front().enforced = true;
@@ -1062,7 +1103,9 @@ void ReferenceLineProvider::GetAnchorPoints(
 // 数据转换为标准的referenceline，然后平滑
 bool ReferenceLineProvider::SmoothRouteSegment(const RouteSegments &segments,
                                                ReferenceLine *reference_line) {
+  // 查看path构造函数
   hdmap::Path path(segments);
+  // 进入referenceline构造函数查看ReferenceLine构造
   return SmoothReferenceLine(ReferenceLine(path), reference_line);
 }
 
@@ -1080,10 +1123,10 @@ bool ReferenceLineProvider::SmoothPrefixedReferenceLine(
   for (auto &point : anchor_points) {
     common::SLPoint sl_point;
     if (!prefix_ref.XYToSL(point.path_point, &sl_point)) {
-      continue;
+      continue; // 如果投影失败则跳过
     }
     if (sl_point.s() < 0 || sl_point.s() > prefix_ref.Length()) {
-      continue;
+      continue; // 如果投影s小于0，说明在参考线后面，如果大于prefix_ref.Length()，则说明在参考线前面，都直接跳过
     }
     auto prefix_ref_point = prefix_ref.GetNearestReferencePoint(sl_point.s());
     point.path_point.set_x(prefix_ref_point.x());
@@ -1092,7 +1135,7 @@ bool ReferenceLineProvider::SmoothPrefixedReferenceLine(
     point.path_point.set_theta(prefix_ref_point.heading());
     point.longitudinal_bound = 1e-6;
     point.lateral_bound = 1e-6;
-    point.enforced = true;
+    point.enforced = true;  // 如果在这之前，说明这些点已经被优化过了，就不需要优化了，那么直接绑定到原来的点就可以了
     break;
   }
 
@@ -1110,7 +1153,7 @@ bool ReferenceLineProvider::SmoothPrefixedReferenceLine(
 
 bool ReferenceLineProvider::SmoothReferenceLine(
     const ReferenceLine &raw_reference_line, ReferenceLine *reference_line) {
-  // 如果不允许平滑，直接输出
+  // 如果不使用优化，则直接将参考线进行赋值
   if (!FLAGS_enable_smooth_reference_line) {
     *reference_line = raw_reference_line;
     return true;
@@ -1118,14 +1161,17 @@ bool ReferenceLineProvider::SmoothReferenceLine(
   // 生成锚点
   // generate anchor points:
   std::vector<AnchorPoint> anchor_points;
+  // 获取锚点
   GetAnchorPoints(raw_reference_line, &anchor_points);
+  // 给smooth_添加锚点信息，这里smoother_为DistancePointsReferenceLineSmoother
   smoother_->SetAnchorPoints(anchor_points);
-  // 平滑路径
+  // 参考线优化
   if (!smoother_->Smooth(raw_reference_line, reference_line)) {
     AERROR << "Failed to smooth reference line with anchor points";
     return false;
   }
-  // 校验目标路径是否有效
+  // 优化参考线是否有效，就是利用优化参考线上的点与原始参考线计算l值，如果偏离了5米
+  // 则认为无效
   if (!IsReferenceLineSmoothValid(raw_reference_line, *reference_line)) {
     AERROR << "The smoothed reference line error is too large";
     return false;

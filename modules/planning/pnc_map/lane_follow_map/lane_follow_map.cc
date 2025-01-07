@@ -560,10 +560,13 @@ bool LaneFollowMap::GetRouteSegments(
     }
     // passage能否退出
     route_segments->back().SetCanExit(passage.can_exit());
+    // 设置下一个行动标识，也就是变道类型
     route_segments->back().SetNextAction(passage.change_lane_type());
     const std::string route_segment_id = absl::StrCat(road_index, "_", index);
     route_segments->back().SetId(route_segment_id);
+    // 添加目的地停车标识
     route_segments->back().SetStopForDestination(stop_for_destination_);
+    // 如果当前index是当前车辆所在标识，则设置标识位为true
     if (index == passage_index) {
       route_segments->back().SetIsOnSegment(true);
       route_segments->back().SetPreviousAction(routing::FORWARD);
@@ -725,6 +728,7 @@ bool LaneFollowMap::ExtendSegments(const hdmap::RouteSegments &segments,
                         extended_segments);
 }
 
+// 如果长度不够，则延长；否则，截断
 bool LaneFollowMap::ExtendSegments(
     const hdmap::RouteSegments &segments, double start_s, double end_s,
     hdmap::RouteSegments *const truncated_segments) const {
@@ -736,32 +740,38 @@ bool LaneFollowMap::ExtendSegments(
   CHECK_NOTNULL(truncated_segments);
   // 将segments的属性信息赋值给truncated_segments
   truncated_segments->SetProperties(segments);
-
+  // 如果起始s大于等于终点s则返回错误
   if (start_s >= end_s) {
     AERROR << "start_s(" << start_s << " >= end_s(" << end_s << ")";
     return false;
   }
   std::unordered_set<std::string> unique_lanes;
   static constexpr double kRouteEpsilon = 1e-3;
+  // 当前车道投影点所在车道的后向查询起始点小于0，即sl.s - backward_length < 0 
+  // 也就是此时起始距离已经落后第一条车道，此时就需要查询first lane segment，即
+  // segments第一条车道前置部分进行截取。如果前置部分仍然不够长度sl.s + backward_length，
+  // 那么就需要加入这条车道的前置车道进行截取 （也就是前置车道的前置车道）
+  // sl.s是投影点相对于passage的累积距离
+  // 而不是相对于整个规划路径road的累积距离。所以用小于0来判断后向查询点是否在第一个laneSegment之前
   // Extend the trajectory towards the start of the trajectory.
-  if (start_s < 0) {
+  if (start_s < 0) { 
     const auto &first_segment = *segments.begin();
-    auto lane = first_segment.lane;
-    double s = first_segment.start_s;
-    double extend_s = -start_s;
+    auto lane = first_segment.lane; // 获取第一条车道
+    double s = first_segment.start_s; // 获取第一条车道起始s
+    double extend_s = -start_s;   // extend_s为需要从牵扯道中截取的道路段长度，初始化为-start_s
     std::vector<hdmap::LaneSegment> extended_lane_segments;
-    while (extend_s > kRouteEpsilon) {
-      if (s <= kRouteEpsilon) {
+    while (extend_s > kRouteEpsilon) {  // 每次循环（截取）以后extend_s都会减小，直到为0
+      if (s <= kRouteEpsilon) { // s小于等于0，则需要查询这条lane对应的前置车道进行截取
         lane = GetRoutePredecessor(lane);
         if (lane == nullptr ||
             unique_lanes.find(lane->id().id()) != unique_lanes.end()) {
           break;
         }
         s = lane->total_length();
-      } else {
+      } else {  // 如果s大于0，此时就可以从这条前置lane中截取路段，或者刚开始first_segment.start_s大于0，那么继续从第一条车道截取
         const double length = std::min(s, extend_s);
         extended_lane_segments.emplace_back(lane, s - length, s);
-        extend_s -= length;
+        extend_s -= length; // 更新extend_s，如果extend_s > 0，说明还需要继续寻找前置道路段截取
         s -= length;
         unique_lanes.insert(lane->id().id());
       }
@@ -770,6 +780,8 @@ bool LaneFollowMap::ExtendSegments(
                                extended_lane_segments.rbegin(),
                                extended_lane_segments.rend());
   }
+
+  // 正常passage的laneSegment截取
   bool found_loop = false;
   double router_s = 0;
   for (const auto &lane_segment : segments) {
@@ -788,15 +800,17 @@ bool LaneFollowMap::ExtendSegments(
                                          adjusted_end_s);
         unique_lanes.insert(lane_segment.lane->id().id());
       } else {
-        found_loop = true;
+        found_loop = true;  // 说明这个导航路径是闭环的，那么直接退出
         break;
       }
     }
     router_s += (lane_segment.end_s - lane_segment.start_s);
+    // 退出循环条件
     if (router_s > end_s) {
       break;
     }
   }
+  // 如果导航路径是闭环的，则直接返回true
   if (found_loop) {
     return true;
   }

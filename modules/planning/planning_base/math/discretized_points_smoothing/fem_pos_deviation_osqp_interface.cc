@@ -28,7 +28,7 @@ namespace apollo {
 namespace planning {
 
 bool FemPosDeviationOsqpInterface::Solve() {
-  // Sanity Check
+  // Sanity Check 合理性检查
   if (ref_points_.empty()) {
     AERROR << "reference points empty, solver early terminates";
     return false;
@@ -50,16 +50,19 @@ bool FemPosDeviationOsqpInterface::Solve() {
   }
 
   // Calculate optimization states definitions
+  // 举例：这里是15个点，其中每个点都x,y方向，所以有30个变量，30个约束
   num_of_points_ = static_cast<int>(ref_points_.size());
   num_of_variables_ = num_of_points_ * 2;
   num_of_constraints_ = num_of_variables_;
 
+  // 计算二次规划P矩阵，二次项参数
   // Calculate kernel
   std::vector<c_float> P_data;
   std::vector<c_int> P_indices;
   std::vector<c_int> P_indptr;
   CalculateKernel(&P_data, &P_indices, &P_indptr);
 
+  // 计算二次规划A矩阵，约束矩阵
   // Calculate affine constraints
   std::vector<c_float> A_data;
   std::vector<c_int> A_indices;
@@ -69,6 +72,7 @@ bool FemPosDeviationOsqpInterface::Solve() {
   CalculateAffineConstraint(&A_data, &A_indices, &A_indptr, &lower_bounds,
                             &upper_bounds);
 
+  // 计算偏移向量P，一次项参数
   // Calculate offset
   std::vector<c_float> q;
   CalculateOffset(&q);
@@ -130,7 +134,7 @@ void FemPosDeviationOsqpInterface::CalculateKernel(
     std::vector<c_float>* P_data, std::vector<c_int>* P_indices,
     std::vector<c_int>* P_indptr) {
   CHECK_GT(num_of_variables_, 4);
-
+  // P矩阵，奇数列和偶数列为点X和Y
   // Three quadratic penalties are involved:
   // 1. Penalty x on distance between middle point and point by finite element
   // estimate;
@@ -254,6 +258,7 @@ void FemPosDeviationOsqpInterface::CalculateAffineConstraint(
   }
 }
 
+// 原始热启动
 void FemPosDeviationOsqpInterface::SetPrimalWarmStart(
     std::vector<c_float>* primal_warm_start) {
   CHECK_EQ(ref_points_.size(), static_cast<size_t>(num_of_points_));

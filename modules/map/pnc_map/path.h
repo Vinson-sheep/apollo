@@ -365,7 +365,7 @@ class Path {
  protected:
   int num_points_ = 0;
   int num_segments_ = 0;
-  std::vector<MapPathPoint> path_points_;
+  std::vector<MapPathPoint> path_points_; // 路径点信息
   std::vector<LaneSegment> lane_segments_;
   std::vector<double> lane_accumulated_s_;
   std::vector<LaneSegment> lane_segments_to_next_point_;
