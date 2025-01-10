@@ -171,10 +171,11 @@ Status OnLanePlanning::Init(const PlanningConfig& config) {
 Status OnLanePlanning::InitFrame(const uint32_t sequence_num,
                                  const TrajectoryPoint& planning_start_point,
                                  const VehicleState& vehicle_state) {
-  // frame重置空数据
+  // 将路径规划数据来源，规划起始点，车辆位置，参考线统一给到frame，供后续算法使用
   frame_.reset(new Frame(sequence_num, local_view_, planning_start_point,
                          vehicle_state, reference_line_provider_.get()));
 
+  // 如果指针为空
   if (frame_ == nullptr) {
     return Status(ErrorCode::PLANNING_ERROR, "Fail to init frame: nullptr.");
   }
@@ -185,6 +186,7 @@ Status OnLanePlanning::InitFrame(const uint32_t sequence_num,
   reference_line_provider_->GetReferenceLines(&reference_lines, &segments);
   DCHECK_EQ(reference_lines.size(), segments.size());
 
+  // 前视距离 根据当前车速 * 时距 (8s) > 180m ? 250 : 150
   auto forward_limit = planning::PncMapBase::LookForwardDistance(
       vehicle_state.linear_velocity());
 
@@ -210,7 +212,9 @@ Status OnLanePlanning::InitFrame(const uint32_t sequence_num,
     }
   }
 
-  // 将参考线和segments装配到frame中
+  // 首先是InitFrameData()，里面对hdmap、vehicle_state、obstacle、traffic_lights进行赋值
+  // 其次，构建ReferenceLineInfo结构，我之前提到过ReferenceLineInfo结构里包含了reference_lines信息，
+  // 还包括了vehicle_state、obstacles等信息。到这里，就构建完了Frame结构与ReferenceLineInfo结构体
   auto status = frame_->Init(
       injector_->vehicle_state(), reference_lines, segments,
       reference_line_provider_->FutureRouteWaypoints(), injector_->ego_info());
@@ -266,17 +270,18 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
   // chassis
   // ADEBUG << "Get chassis:" << local_view_.chassis->DebugString();
 
-  // 校验和更新车辆状态
+  // 更新车辆状态----->进入Update函数查看 (vehicle_state_provider)
   Status status = injector_->vehicle_state()->Update(
       *local_view_.localization_estimate, *local_view_.chassis);
 
+  // 获取车辆状态
   VehicleState vehicle_state = injector_->vehicle_state()->vehicle_state();
   // const double vehicle_state_timestamp = vehicle_state.timestamp();
   // DCHECK_GE(start_timestamp, vehicle_state_timestamp)
   //     << "start_timestamp is behind vehicle_state_timestamp by "
   //     << start_timestamp - vehicle_state_timestamp << " secs";
 
-  // 如何车辆状态不合法，则产生刹车轨迹
+  // 如何车辆状态无效，则产生刹车轨迹
   if (!status.ok() || !util::IsVehicleStateValid(vehicle_state)) {
     const std::string msg =
         "Update VehicleStateProvider failed "
@@ -295,20 +300,20 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
     return;
   }
 
-  // 
   if (start_timestamp + 1e-6 < vehicle_state_timestamp) {
     common::monitor::MonitorLogBuffer monitor_logger_buffer(
         common::monitor::MonitorMessageItem::PLANNING);
     monitor_logger_buffer.ERROR("ego system time is behind GPS time");
   }
 
+  // 对齐时间戳 vehicle_state_timestamp为车辆状态时间戳
   if (start_timestamp - vehicle_state_timestamp <
-      FLAGS_message_latency_threshold) {
+      FLAGS_message_latency_threshold) {  // 0.02s 消息延时
     vehicle_state = AlignTimeStamp(vehicle_state, start_timestamp);
   }
 
   // Update reference line provider and reset scenario if new routing
-  // 如果是新指令，则重置reference_line_provider
+  // 如果是两个不同的routing，则重新初始化
   reference_line_provider_->UpdateVehicleState(vehicle_state);
   if (local_view_.planning_command->is_motion_command() &&
       util::IsDifferentRouting(last_command_, *local_view_.planning_command)) {
@@ -326,10 +331,13 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
 
   // planning is triggered by prediction data, but we can still use an estimated
   // cycle time for stitching
+  // 进行轨迹拼接
+  // 并告诉我们是否重规划以及重规划的原因
   const double planning_cycle_time =
       1.0 / static_cast<double>(FLAGS_planning_loop_rate);
-
+  // 截取要拼接上一帧的轨迹点，用于后续拼接
   std::string replan_reason;
+  // 获取拼接的轨迹点
   std::vector<TrajectoryPoint> stitching_trajectory =
       TrajectoryStitcher::ComputeStitchingTrajectory(
           *(local_view_.chassis), vehicle_state, start_timestamp,
@@ -337,29 +345,35 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
           true, last_publishable_trajectory_.get(), &replan_reason,
           *local_view_.control_interactive_msg);
 
+  // 更新ego信息，进入EgoInfo类查看私有变量
   injector_->ego_info()->Update(stitching_trajectory.back(), vehicle_state);
   const uint32_t frame_num = static_cast<uint32_t>(seq_num_++);
-  AINFO << "Planning start frame sequence id = [" << frame_num << "]";
+  // 初始化frame，重要信息，将拼接轨迹最后一个点作为路径规划起始点
+  // AINFO << "Planning start frame sequence id = [" << frame_num << "]";
   status = InitFrame(frame_num, stitching_trajectory.back(), vehicle_state);
+  // 如果初始化frame成功，计算前方畅通距离
   if (status.ok()) {
+    // 此方法论存在问题，没有考虑road曲率，直接利用当前车辆前方box与障碍物做干涉检查
     injector_->ego_info()->CalculateFrontObstacleClearDistance(
         frame_->obstacles());
     injector_->ego_info()->CalculateCurrentRouteInfo(
         reference_line_provider_.get());
   }
-
+  // 记录debug信息
   if (FLAGS_enable_record_debug) {
     frame_->RecordInputDebug(ptr_trajectory_pb->mutable_debug());
   }
+  // 当运行完了InitFrame函数，则记录从开始到此位置的运行耗时
   ptr_trajectory_pb->mutable_latency_stats()->set_init_frame_time_ms(
       Clock::NowInSeconds() - start_timestamp);
-
+  // 如果初始化frame失败，生成stop轨迹
   if (!status.ok()) {
     AERROR << status.ToString();
     if (FLAGS_publish_estop) {
       // "estop" signal check in function "Control::ProduceControlCommand()"
       // estop_ = estop_ || local_view_.trajectory.estop().is_estop();
       // we should add more information to ensure the estop being triggered.
+      // estop 为安全减速逻辑，遇到特殊情况要进行相应的减速
       ADCTrajectory estop_trajectory;
       EStop* estop = estop_trajectory.mutable_estop();
       estop->set_is_estop(true);
@@ -382,10 +396,12 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
     injector_->frame_history()->Add(n, std::move(frame_));
     return;
   }
-
+  // 交通决策信息，对每条参考线做处理
   for (auto& ref_line_info : *frame_->mutable_reference_line_info()) {
+    // 交通决策执行函数
     auto traffic_status =
         traffic_decider_.Execute(frame_.get(), &ref_line_info);
+    // 如果交通状态不OK，或者当前参考线不可行驶
     if (!traffic_status.ok() || !ref_line_info.IsDrivable()) {
       ref_line_info.SetDrivable(false);
       AWARN << "Reference line " << ref_line_info.Lanes().Id()
@@ -393,6 +409,7 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
     }
   }
 
+  // 路径规划主入口
   status = Plan(start_timestamp, stitching_trajectory, ptr_trajectory_pb);
 
   // print trajxy
@@ -413,6 +430,7 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
                       vehicle_state.heading(), true);
   print_box.PrintToLog();
 
+  // 计算路径规划耗时
   const auto end_system_timestamp =
       std::chrono::duration<double>(
           std::chrono::system_clock::now().time_since_epoch())
@@ -421,10 +439,12 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
       (end_system_timestamp - start_system_timestamp) * 1000;
   ADEBUG << "total planning time spend: " << time_diff_ms << " ms.";
 
+  // 赋值算法耗时信息
   ptr_trajectory_pb->mutable_latency_stats()->set_total_time_ms(time_diff_ms);
   ADEBUG << "Planning latency: "
          << ptr_trajectory_pb->latency_stats().DebugString();
 
+  // 如果路径规划失败，设置e_stop
   if (!status.ok()) {
     status.Save(ptr_trajectory_pb->mutable_header()->mutable_status());
     AERROR << "Planning failed:" << status.ToString();
@@ -438,33 +458,36 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
       estop->set_reason(status.error_message());
     }
   }
-
+  // 添加重新路径规划原因
   ptr_trajectory_pb->set_is_replan(stitching_trajectory.size() == 1);
   if (ptr_trajectory_pb->is_replan()) {
     ptr_trajectory_pb->set_replan_reason(replan_reason);
   }
-
+  // 添加相关时间信息
   if (frame_->open_space_info().is_on_open_space_trajectory()) {
     FillPlanningPb(start_timestamp, ptr_trajectory_pb);
     ADEBUG << "Planning pb:" << ptr_trajectory_pb->header().DebugString();
     frame_->set_current_frame_planned_trajectory(*ptr_trajectory_pb);
   } else {
+    // 获取参考线任务
     auto* ref_line_task =
         ptr_trajectory_pb->mutable_latency_stats()->add_task_stats();
+    // 参考线任务耗时
     ref_line_task->set_time_ms(reference_line_provider_->LastTimeDelay() *
                                1000.0);
+    // 任务名为ReferenceLineProvider
     ref_line_task->set_name("ReferenceLineProvider");
 
     FillPlanningPb(start_timestamp, ptr_trajectory_pb);
     ADEBUG << "Planning pb:" << ptr_trajectory_pb->header().DebugString();
-
+    // 将当前路径规划添加到当前帧信息
     frame_->set_current_frame_planned_trajectory(*ptr_trajectory_pb);
     if (FLAGS_enable_planning_smoother) {
       planning_smoother_.Smooth(injector_->frame_history(), frame_.get(),
                                 ptr_trajectory_pb);
     }
   }
-
+  // 添加历史frame信息
   const auto end_planning_perf_timestamp =
       std::chrono::duration<double>(
           std::chrono::system_clock::now().time_since_epoch())
@@ -1222,6 +1245,7 @@ void OnLanePlanning::AddPublishedSpeed(const ADCTrajectory& trajectory_pb,
 
 VehicleState OnLanePlanning::AlignTimeStamp(const VehicleState& vehicle_state,
                                             const double curr_timestamp) const {
+  // 估算未来车辆位置
   // TODO(Jinyun): use the same method in trajectory stitching
   //               for forward prediction
   auto future_xy = injector_->vehicle_state()->EstimateFuturePosition(

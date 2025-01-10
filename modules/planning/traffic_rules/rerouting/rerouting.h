@@ -30,6 +30,7 @@
 namespace apollo {
 namespace planning {
 
+// 重新路由的处理思想就是根据车辆当前位置等信息判断是否需要重新请求路由
 /**
  * This class decides whether we should send rerouting request based on traffic
  * situation.

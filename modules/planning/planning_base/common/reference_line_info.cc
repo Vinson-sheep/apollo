@@ -76,35 +76,40 @@ ReferenceLineInfo::ReferenceLineInfo(const common::VehicleState& vehicle_state,
 
 bool ReferenceLineInfo::Init(const std::vector<const Obstacle*>& obstacles,
                              double target_speed) {
+  // 获取车辆参数
   const auto& param = VehicleConfigHelper::GetConfig().vehicle_param();
-  // stitching point
+  // stitching point 赋值拼接点，也就是路径规划起始点
   const auto& path_point = adc_planning_point_.path_point();
   Vec2d position(path_point.x(), path_point.y());
+  // 获取规划起始点box
   Vec2d vec_to_center(
       (param.front_edge_to_center() - param.back_edge_to_center()) / 2.0,
       (param.left_edge_to_center() - param.right_edge_to_center()) / 2.0);
   Vec2d center(position + vec_to_center.rotate(path_point.theta()));
   Box2d box(center, path_point.theta(), param.length(), param.width());
   // realtime vehicle position
+  // 获取车辆位置box
   Vec2d vehicle_position(vehicle_state_.x(), vehicle_state_.y());
   Vec2d vehicle_center(vehicle_position +
                        vec_to_center.rotate(vehicle_state_.heading()));
   Box2d vehicle_box(vehicle_center, vehicle_state_.heading(), param.length(),
                     param.width());
-
+  // 获取规划起始点在参考线上的sl值
   if (!reference_line_.GetSLBoundary(box, &adc_sl_boundary_)) {
     AERROR << "Failed to get ADC boundary from box: " << box.DebugString();
     return false;
   }
-
+  // 初始化重叠区域
   InitFirstOverlaps();
 
+  // 当前车辆位置不在参考线上
   if (adc_sl_boundary_.end_s() < 0 ||
       adc_sl_boundary_.start_s() > reference_line_.Length()) {
     AWARN << "Vehicle SL " << adc_sl_boundary_.ShortDebugString()
           << " is not on reference line:[0, " << reference_line_.Length()
           << "]";
   }
+  // 车辆横向距离远离参考线
   static constexpr double kOutOfReferenceLineL = 14.0;  // in meters
   if (adc_sl_boundary_.start_l() > kOutOfReferenceLineL ||
       adc_sl_boundary_.end_l() < -kOutOfReferenceLineL) {
@@ -113,12 +118,15 @@ bool ReferenceLineInfo::Init(const std::vector<const Obstacle*>& obstacles,
            << "adc_sl_boundary_.end_l:" << adc_sl_boundary_.end_l();
     return false;
   }
+  // adc是否位于车道上
   is_on_reference_line_ = reference_line_.IsOnLane(adc_sl_boundary_);
+  // 
   if (!AddObstacles(obstacles)) {
     AERROR << "Failed to add obstacles to reference line";
     return false;
   }
 
+  // 添加通过减速带时的速度限制
   const auto& map_path = reference_line_.map_path();
   for (const auto& speed_bump : map_path.speed_bump_overlaps()) {
     // -1 and + 1.0 are added to make sure it can be sampled.
@@ -126,7 +134,7 @@ bool ReferenceLineInfo::Init(const std::vector<const Obstacle*>& obstacles,
                                   speed_bump.end_s + 1.0,
                                   FLAGS_speed_bump_speed_limit);
   }
-
+  // 设置巡航速度
   SetCruiseSpeed(target_speed);
   // set lattice planning target speed limit;
   SetLatticeCruiseSpeed(target_speed);
@@ -246,43 +254,51 @@ bool ReferenceLineInfo::GetFirstOverlap(
     const std::vector<hdmap::PathOverlap>& path_overlaps,
     hdmap::PathOverlap* path_overlap) {
   CHECK_NOTNULL(path_overlap);
+  // 获取当前车辆位置的end_s
   const double start_s = adc_sl_boundary_.end_s();
   static constexpr double kMaxOverlapRange = 500.0;
   double overlap_min_s = kMaxOverlapRange;
-
+  // 获取最后一个path_overlap迭代器
   auto overlap_min_s_iter = path_overlaps.end();
+  // 循环遍历path_overlaps
   for (auto iter = path_overlaps.begin(); iter != path_overlaps.end(); ++iter) {
+    // 如果overlap的end_s小于start_s，也就是位于当前车辆位置后面，则直接跳过
     if (iter->end_s < start_s) {
       continue;
     }
+    // 获取最近的path_overlap
     if (overlap_min_s > iter->start_s) {
       overlap_min_s_iter = iter;
       overlap_min_s = iter->start_s;
     }
   }
 
+  // 确保获取path_overlap不为空
   // Ensure that the path_overlaps is not empty.
   if (overlap_min_s_iter != path_overlaps.end()) {
     *path_overlap = *overlap_min_s_iter;
   }
-
+  // 第一个path_overlap是不是小于500m
   return overlap_min_s < kMaxOverlapRange;
 }
 
 void ReferenceLineInfo::InitFirstOverlaps() {
   const auto& map_path = reference_line_.map_path();
+  // 获取第一个禁行区域，必须小于500m范围内
   // clear_zone
   hdmap::PathOverlap clear_area_overlap;
   if (GetFirstOverlap(map_path.clear_area_overlaps(), &clear_area_overlap)) {
     first_encounter_overlaps_.emplace_back(CLEAR_AREA, clear_area_overlap);
   }
 
+  // 获取人行横道
   // crosswalk
   hdmap::PathOverlap crosswalk_overlap;
   if (GetFirstOverlap(map_path.crosswalk_overlaps(), &crosswalk_overlap)) {
     first_encounter_overlaps_.emplace_back(CROSSWALK, crosswalk_overlap);
   }
 
+  // 获取交叉路口
   // pnc_junction
   hdmap::PathOverlap pnc_junction_overlap;
   if (GetFirstOverlap(map_path.pnc_junction_overlaps(),
@@ -290,18 +306,21 @@ void ReferenceLineInfo::InitFirstOverlaps() {
     first_encounter_overlaps_.emplace_back(PNC_JUNCTION, pnc_junction_overlap);
   }
 
+  // 获取交通信号灯
   // signal
   hdmap::PathOverlap signal_overlap;
   if (GetFirstOverlap(map_path.signal_overlaps(), &signal_overlap)) {
     first_encounter_overlaps_.emplace_back(SIGNAL, signal_overlap);
   }
 
+  // 获取停车区域位置
   // stop_sign
   hdmap::PathOverlap stop_sign_overlap;
   if (GetFirstOverlap(map_path.stop_sign_overlaps(), &stop_sign_overlap)) {
     first_encounter_overlaps_.emplace_back(STOP_SIGN, stop_sign_overlap);
   }
 
+  // 获取让行标志区域
   // yield_sign
   hdmap::PathOverlap yield_sign_overlap;
   if (GetFirstOverlap(map_path.yield_sign_overlaps(), &yield_sign_overlap)) {
@@ -314,6 +333,7 @@ void ReferenceLineInfo::InitFirstOverlaps() {
     first_encounter_overlaps_.emplace_back(AREA, area_overlap);
   }
 
+  /// 对上述所有获取信息进行排序，按位置进行排序
   // sort by start_s
   if (!first_encounter_overlaps_.empty()) {
     std::sort(first_encounter_overlaps_.begin(),
@@ -392,43 +412,53 @@ bool ReferenceLineInfo::AddObstacleHelper(
 
 // AddObstacle is thread safe
 Obstacle* ReferenceLineInfo::AddObstacle(const Obstacle* obstacle) {
+  // 如果障碍物为空
   if (!obstacle) {
     AERROR << "The provided obstacle is empty";
     return nullptr;
   }
+  // 往path_decision_添加障碍物
   auto* mutable_obstacle = path_decision_.AddObstacle(*obstacle);
   if (!mutable_obstacle) {
     AERROR << "failed to add obstacle " << obstacle->Id();
     return nullptr;
   }
-
+  // 获取障碍物在参考线上的sl值
   SLBoundary perception_sl;
   if (!reference_line_.GetSLBoundary(obstacle->PerceptionPolygon(),
                                      &perception_sl)) {
     AERROR << "Failed to get sl boundary for obstacle: " << obstacle->Id();
     return mutable_obstacle;
   }
+  // 添加sl值
   mutable_obstacle->SetPerceptionSlBoundary(perception_sl);
+  // 判断此障碍物是否是车道的block
   mutable_obstacle->CheckLaneBlocking(reference_line_);
+  // 判断此障碍物是否阻塞车道，比如障碍物静止且横跨车辆中心线，添加debug信息
   if (mutable_obstacle->IsLaneBlocking()) {
     ADEBUG << "obstacle [" << obstacle->Id() << "] is lane blocking.";
   } else {
     ADEBUG << "obstacle [" << obstacle->Id() << "] is NOT lane blocking.";
   }
-
+  // 如果是无关障碍物
   if (IsIrrelevantObstacle(*mutable_obstacle)) {
+    // 目标决策类型
     ObjectDecisionType ignore;
     ignore.mutable_ignore();
+    // 添加横向决策，障碍物忽略
     path_decision_.AddLateralDecision("reference_line_filter", obstacle->Id(),
                                       ignore);
+    // 添加纵向决策
     path_decision_.AddLongitudinalDecision("reference_line_filter",
                                            obstacle->Id(), ignore);
     AINFO << "NO build reference line st boundary. id:" << obstacle->Id();
   } else {
+    // 相关障碍物
     AINFO << "build reference line st boundary. id:" << obstacle->Id();
+    // 添加参考线st边界
     mutable_obstacle->BuildReferenceLineStBoundary(reference_line_,
                                                    adc_sl_boundary_.start_s());
-
+    // 输出debug信息
     ADEBUG << "reference line st boundary: t["
            << mutable_obstacle->reference_line_st_boundary().min_t() << ", "
            << mutable_obstacle->reference_line_st_boundary().max_t() << "] s["
@@ -440,6 +470,7 @@ Obstacle* ReferenceLineInfo::AddObstacle(const Obstacle* obstacle) {
 
 bool ReferenceLineInfo::AddObstacles(
     const std::vector<const Obstacle*>& obstacles) {
+  // 是否使用多线程来添加障碍物
   if (FLAGS_use_multi_thread_to_add_obstacles) {
     std::vector<std::future<Obstacle*>> results;
     for (const auto* obstacle : obstacles) {
@@ -453,6 +484,7 @@ bool ReferenceLineInfo::AddObstacles(
       }
     }
   } else {
+    // 遍历障碍物
     for (const auto* obstacle : obstacles) {
       if (!AddObstacle(obstacle)) {
         AERROR << "Failed to add obstacle " << obstacle->Id();
@@ -465,14 +497,20 @@ bool ReferenceLineInfo::AddObstacles(
 }
 
 bool ReferenceLineInfo::IsIrrelevantObstacle(const Obstacle& obstacle) {
+  // 是否是警戒级别的障碍物，属性在Obstacles构造函数中添加，如果是警戒级别的，则是相关障碍物
   if (obstacle.IsCautionLevelObstacle()) {
     return false;
   }
+  // 如果是无关障碍物
   // if adc is on the road, and obstacle behind adc, ignore
+  // 获取障碍物sl的值
   const auto& obstacle_boundary = obstacle.PerceptionSLBoundary();
+  // 如果障碍物end_s大于参考线长度，则是无关的
   if (obstacle_boundary.start_s() > reference_line_.Length()) {
     return true;
   }
+  // 如果障碍物在参考线上且不是可变车道参考线且障碍物在自车后面且（障碍物在当前参考线上）
+  // 或者障碍物在参考线起始点后方，则是无关障碍物
   if (is_on_reference_line_ && !IsChangeLanePath() &&
       adc_sl_boundary_.start_s() - obstacle_boundary.end_s() >
           FLAGS_obstacle_lon_ignore_buffer &&

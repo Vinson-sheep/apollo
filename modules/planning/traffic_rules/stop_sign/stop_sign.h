@@ -31,6 +31,7 @@
 namespace apollo {
 namespace planning {
 
+// 看到stop_sign必须停车，所以对这个停止牌的处理逻辑就是生成停止墙
 class StopSign : public TrafficRule {
  public:
   bool Init(const std::string& name,

@@ -29,6 +29,9 @@
 namespace apollo {
 namespace planning {
 
+// 禁停区分成两类，第一类是传统的禁停区，第二类是交叉路口。对于禁停区的处理和对人行横道上障碍物构建虚拟墙很相似。
+// 具体做法是在参考线上构建一块禁停区，从纵向的start_s到end_s（这里的start_s和end_s是禁停区start_s和end_s
+// 在参考线上的投影点），禁停区宽度在配置文件中设置(4米)
 /**
  * This class creates a virtual obstacle for each clear area region.
  */

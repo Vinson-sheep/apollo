@@ -196,15 +196,20 @@ bool Obstacle::IsValidPerceptionObstacle(const PerceptionObstacle& obstacle) {
 
 std::list<std::unique_ptr<Obstacle>> Obstacle::CreateObstacles(
     const prediction::PredictionObstacles& predictions) {
+  // 障碍物List
   std::list<std::unique_ptr<Obstacle>> obstacles;
+  // 循环遍历预测障碍物
   for (const auto& prediction_obstacle : predictions.prediction_obstacle()) {
+    // 感知目标障碍物是否有效，主要判断障碍物尺寸等信息
     if (!IsValidPerceptionObstacle(prediction_obstacle.perception_obstacle())) {
       AERROR << "Invalid perception obstacle: "
              << prediction_obstacle.perception_obstacle().DebugString();
       continue;
     }
+    // 获取感知障碍物id
     const auto perception_id =
         std::to_string(prediction_obstacle.perception_obstacle().id());
+    // 如果预测障碍物轨迹为空
     if (prediction_obstacle.trajectory().empty()) {
       obstacles.emplace_back(
           new Obstacle(perception_id, prediction_obstacle.perception_obstacle(),
@@ -214,9 +219,12 @@ std::list<std::unique_ptr<Obstacle>> Obstacle::CreateObstacles(
     }
 
     int trajectory_index = 0;
+    // 循环遍历预测障碍物轨迹，有多条轨迹
     for (const auto& trajectory : prediction_obstacle.trajectory()) {
       bool is_valid_trajectory = true;
+      // 循环遍历轨迹点
       for (const auto& point : trajectory.trajectory_point()) {
+        // 轨迹点是否有效
         if (!IsValidTrajectoryPoint(point)) {
           AERROR << "obj:" << perception_id
                  << " TrajectoryPoint: " << trajectory.ShortDebugString()
@@ -228,7 +236,7 @@ std::list<std::unique_ptr<Obstacle>> Obstacle::CreateObstacles(
       if (!is_valid_trajectory) {
         continue;
       }
-
+      // 添加障碍物信息，其中id将轨迹index添加进去
       const std::string obstacle_id =
           absl::StrCat(perception_id, "_", trajectory_index);
       obstacles.emplace_back(
@@ -315,25 +323,35 @@ double Obstacle::MinRadiusStopDistance(
 
 void Obstacle::BuildReferenceLineStBoundary(const ReferenceLine& reference_line,
                                             const double adc_start_s) {
+  // 获取车辆参数
   const auto& adc_param =
       VehicleConfigHelper::Instance()->GetConfig().vehicle_param();
+  // 获取车辆宽度
   const double half_adc_width = adc_param.width() / 2;
+  // 如果是静止障碍物或者障碍物预测轨迹为空
   if (is_static_ || trajectory_.trajectory_point().empty()) {
+    // STPoint继承Vec2d
     std::vector<std::pair<STPoint, STPoint>> point_pairs;
+    // 获取起始和终点s
     double start_s = sl_boundary_.start_s();
     double end_s = sl_boundary_.end_s();
+    // 如果终点-起始s小于0.2m
     if (end_s - start_s < kStBoundaryDeltaS) {
+      // 终点 = 起始点 + 0.2m
       end_s = start_s + kStBoundaryDeltaS;
     }
+    // 判断是否阻塞道路，如果不阻塞，那么此障碍物就不需要考虑了
     if (!reference_line.IsBlockRoad(perception_bounding_box_, half_adc_width)) {
       return;
     }
+    //赋值point_pairs
     point_pairs.emplace_back(STPoint(start_s - adc_start_s, 0.0),
                              STPoint(end_s - adc_start_s, 0.0));
-    point_pairs.emplace_back(STPoint(start_s - adc_start_s, FLAGS_st_max_t),
+    point_pairs.emplace_back(STPoint(start_s - adc_start_s, FLAGS_st_max_t),  // 8s时间
                              STPoint(end_s - adc_start_s, FLAGS_st_max_t));
     reference_line_st_boundary_ = STBoundary(point_pairs);
   } else {
+    // 如果不是静止障碍物，则需要考虑障碍物预测轨迹，也就是未来运动道的位置点去添加st边界
     if (BuildTrajectoryStBoundary(reference_line, adc_start_s,
                                   &reference_line_st_boundary_)) {
       ADEBUG << "Found st_boundary for obstacle " << id_;
@@ -347,22 +365,29 @@ void Obstacle::BuildReferenceLineStBoundary(const ReferenceLine& reference_line,
   }
 }
 
+// 建立轨迹的ST边界
+// 输入参数 参考线类对象，自车起始franet系纵坐标s，第三个参数用以存放得到的结果
 bool Obstacle::BuildTrajectoryStBoundary(const ReferenceLine& reference_line,
                                          const double adc_start_s,
                                          STBoundary* const st_boundary) {
+  // 是否是有效的障碍物
   if (!IsValidObstacle(perception_obstacle_)) {
     AERROR << "Fail to build trajectory st boundary because object is not "
               "valid. PerceptionObstacle: "
            << perception_obstacle_.DebugString();
     return false;
   }
+  // 获取障碍物目标宽度和长度
   const double object_width = perception_obstacle_.width();
   const double object_length = perception_obstacle_.length();
+  // 获取障碍物轨迹点坐标
   const auto& trajectory_points = trajectory_.trajectory_point();
+  // 如果障碍物轨迹点为空，则直接返回false，那么就不需要考虑了
   if (trajectory_points.empty()) {
     AWARN << "object " << id_ << " has no trajectory points";
     return false;
   }
+  // 获取自车车辆参数
   const auto& adc_param =
       VehicleConfigHelper::Instance()->GetConfig().vehicle_param();
   const double adc_length = adc_param.length();
@@ -370,62 +395,76 @@ bool Obstacle::BuildTrajectoryStBoundary(const ReferenceLine& reference_line,
   const double adc_width = adc_param.width();
   common::math::Box2d min_box({0, 0}, 1.0, 1.0, 1.0);
   common::math::Box2d max_box({0, 0}, 1.0, 1.0, 1.0);
+  // STpoint： public common:math::Vec2d
+  // 输出结果，将st point围成polygon
   std::vector<std::pair<STPoint, STPoint>> polygon_points;
+
 
   SLBoundary last_sl_boundary;
   int last_index = 0;
-
+  // 循环轨迹点，障碍物轨迹由预测给出
   for (int i = 1; i < trajectory_points.size(); ++i) {
     ADEBUG << "last_sl_boundary: " << last_sl_boundary.ShortDebugString();
-
+    // 上一个轨迹点
     const auto& first_traj_point = trajectory_points[i - 1];
+    // 当前轨迹点
     const auto& second_traj_point = trajectory_points[i];
+    // 获取上一个和当前轨迹点
     const auto& first_point = first_traj_point.path_point();
     const auto& second_point = second_traj_point.path_point();
-
+    // 障碍物目标移动的box长度 = 障碍物长度 + 两个轨迹点之间的长度
     double object_moving_box_length =
         object_length + common::util::DistanceXY(first_point, second_point);
-
+    // 获取上一个点和当前点的中心坐标
     common::math::Vec2d center((first_point.x() + second_point.x()) / 2.0,
                                (first_point.y() + second_point.y()) / 2.0);
+    // 生成轨迹点上的box，以上一个点和当前点的中心点为中心，box的长度用object_moving_box_length
+    // 相当于扩宽边界
     common::math::Box2d object_moving_box(
         center, first_point.theta(), object_moving_box_length, object_width);
     SLBoundary object_boundary;
     // NOTICE: this method will have errors when the reference line is not
     // straight. Need double loop to cover all corner cases.
     // roughly skip points that are too close to last_sl_boundary box
+    // 计算last_index和当前点的距离
     const double distance_xy =
         common::util::DistanceXY(trajectory_points[last_index].path_point(),
                                  trajectory_points[i].path_point());
+
+    // 障碍物从last_index点挪到第i个轨迹点，横向上变化量假设最恶劣变化distance_xy两点间直线距离，
+    // 比如障碍物是横穿道路
     if (last_sl_boundary.start_l() > distance_xy ||
         last_sl_boundary.end_l() < -distance_xy) {
-      continue;
+      continue; // 提升搜索效率
     }
-
+    // 获取中间s
     const double mid_s =
         (last_sl_boundary.start_s() + last_sl_boundary.end_s()) / 2.0;
+    // 获取start_s，end_s，这里使用start_s和end_s为搜索范围，快速搜索object_boundary
     const double start_s = std::fmax(0.0, mid_s - 2.0 * distance_xy);
     const double end_s = (i == 1) ? reference_line.Length()
                                   : std::fmin(reference_line.Length(),
                                               mid_s + 2.0 * distance_xy);
-
+    // 利用object_moving_box计算近似的sl边界，进入GetApproximateSLBoundary函数查看
     if (!reference_line.GetApproximateSLBoundary(object_moving_box, start_s,
                                                  end_s, &object_boundary)) {
       AERROR << "failed to calculate boundary";
       return false;
     }
-
+    // 更新历史值
     // update history record
     last_sl_boundary = object_boundary;
     last_index = i;
 
+    // 判断障碍物和车辆横向Lateral距离，如果障碍物在参考线两侧，那么障碍物可以忽略
     // skip if object is entirely on one side of reference line.
     static constexpr double kSkipLDistanceFactor = 0.4;
+    // 经验值
     const double skip_l_distance =
         (object_boundary.end_s() - object_boundary.start_s()) *
             kSkipLDistanceFactor +
         adc_width / 2.0;
-
+    // 利用object_moving_box计算近似的sl边界，进入GetApproximateSLBoundary函数查看
     if (!IsCautionLevelObstacle() &&
         (std::fmin(object_boundary.start_l(), object_boundary.end_l()) >
              skip_l_distance ||
@@ -433,54 +472,68 @@ bool Obstacle::BuildTrajectoryStBoundary(const ReferenceLine& reference_line,
              -skip_l_distance)) {
       continue;
     }
-
+    // 如果障碍物在参考线后面，也可以忽略
     if (!IsCautionLevelObstacle() && object_boundary.end_s() < 0) {
       // skip if behind reference line
       continue;
     }
+    // 根据障碍物起始s与自车起始s的距离是否大于20米，判断st_boundary_delta_s
+    // 如果障碍物（end_s - start_s）小于某一阈值st_boundary_delta_s，则忽略
     static constexpr double kSparseMappingS = 20.0;
     const double st_boundary_delta_s =
         (std::fabs(object_boundary.start_s() - adc_start_s) > kSparseMappingS)
-            ? kStBoundarySparseDeltaS
-            : kStBoundaryDeltaS;
+            ? kStBoundarySparseDeltaS // 1m
+            : kStBoundaryDeltaS;  // 0.2m
     const double object_s_diff =
         object_boundary.end_s() - object_boundary.start_s();
     if (object_s_diff < st_boundary_delta_s) {
       continue;
     }
+
+    // 计算low_t和high_t时刻的行驶上下界边界框
+    // 上一点和当前点的时间间隔
     const double delta_t =
         second_traj_point.relative_time() - first_traj_point.relative_time();
+    // 将障碍物的起始和终止s拓宽半个车长
     double low_s = std::max(object_boundary.start_s() - adc_half_length, 0.0);
     bool has_low = false;
     double high_s =
         std::min(object_boundary.end_s() + adc_half_length, FLAGS_st_max_s);
     bool has_high = false;
+    // 从low_s到high_s遍历，获取low_s和high_s，如果有干涉则记录相应数值，退出循环
     while (low_s + st_boundary_delta_s < high_s && !(has_low && has_high)) {
-      if (!has_low) {
+      if (!has_low) { // 采用渐进逼近的方法，逐渐计算边界框的下界
+        // 根据low_s获取参考点
         auto low_ref = reference_line.GetReferencePoint(low_s);
+        // 判断是否有干涉
         has_low = object_moving_box.HasOverlap(
             {low_ref, low_ref.heading(), adc_length,
              adc_width + FLAGS_nonstatic_obstacle_nudge_l_buffer});
         low_s += st_boundary_delta_s;
       }
-      if (!has_high) {
+      if (!has_high) {  // 采用渐进逼近的方法，逐渐计算边界框的上界
+        // 根据high_s获取参考点
         auto high_ref = reference_line.GetReferencePoint(high_s);
+        // 判断是否有干涉
         has_high = object_moving_box.HasOverlap(
             {high_ref, high_ref.heading(), adc_length,
              adc_width + FLAGS_nonstatic_obstacle_nudge_l_buffer});
         high_s -= st_boundary_delta_s;
       }
     }
+    // 如果存在最低和最高点s
     if (has_low && has_high) {
       low_s -= st_boundary_delta_s;
       high_s += st_boundary_delta_s;
+      // 获取Low_t
       double low_t =
           (first_traj_point.relative_time() +
            std::fabs((low_s - object_boundary.start_s()) / object_s_diff) *
-               delta_t);
+               delta_t);  // 相当于时间插值
       polygon_points.emplace_back(
           std::make_pair(STPoint{low_s - adc_start_s, low_t},
                          STPoint{high_s - adc_start_s, low_t}));
+      // 获取high_t
       double high_t =
           (first_traj_point.relative_time() +
            std::fabs((high_s - object_boundary.start_s()) / object_s_diff) *
@@ -492,12 +545,15 @@ bool Obstacle::BuildTrajectoryStBoundary(const ReferenceLine& reference_line,
       }
     }
   }
+  // 如果polygon points不为空
   if (!polygon_points.empty()) {
+    // 按时间从小到大排序
     std::sort(polygon_points.begin(), polygon_points.end(),
               [](const std::pair<STPoint, STPoint>& a,
                  const std::pair<STPoint, STPoint>& b) {
                 return a.first.t() < b.first.t();
               });
+    // std::unique与erase联合使用，移除容器范围内的连续重复元素
     auto last = std::unique(polygon_points.begin(), polygon_points.end(),
                             [](const std::pair<STPoint, STPoint>& a,
                                const std::pair<STPoint, STPoint>& b) {
@@ -737,6 +793,7 @@ bool Obstacle::IsValidObstacle(
 }
 
 void Obstacle::CheckLaneBlocking(const ReferenceLine& reference_line) {
+  // 如果障碍物不是静止的则直接返回
   if (!IsStatic()) {
     is_lane_blocking_ = false;
     return;
@@ -745,15 +802,16 @@ void Obstacle::CheckLaneBlocking(const ReferenceLine& reference_line) {
   DCHECK(sl_boundary_.has_end_s());
   DCHECK(sl_boundary_.has_start_l());
   DCHECK(sl_boundary_.has_end_l());
-
+  // 如果是静态障碍物，如果障碍物跨车道中心，则是blocking
   if (sl_boundary_.start_l() * sl_boundary_.end_l() < 0.0) {
     is_lane_blocking_ = true;
     return;
   }
 
+  // 根据障碍物的sl获取行驶宽度
   const double driving_width = reference_line.GetDrivingWidth(sl_boundary_);
   auto vehicle_param = common::VehicleConfigHelper::GetConfig().vehicle_param();
-
+  // 如果障碍物在车道上且可行使宽度小于车宽+阈值0.8m，则是block障碍物
   if (reference_line.IsOnLane(sl_boundary_) &&
       driving_width <
           vehicle_param.width() + FLAGS_static_obstacle_nudge_l_buffer) {

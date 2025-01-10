@@ -29,6 +29,8 @@
 namespace apollo {
 namespace planning {
 
+// 当参考线结束时，一般需要重新路由，所以需要停车，这种情况下如果程序正常，一般是前方没有路了，
+// 需要重新查询当前点到目的地新的路由
 /**
  * This class decides whether we should send rerouting request based on traffic
  * situation.

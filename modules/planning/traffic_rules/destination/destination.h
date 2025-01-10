@@ -31,6 +31,8 @@
 namespace apollo {
 namespace planning {
 
+// 到达目的地的情况下，障碍物促使本车采取靠边停车或者寻找合适的停车点。若存在有效的靠边停车点，则即创建虚拟障碍物，
+// 并封装成新的PathObstacle加入该ReferenceLineInfo的PathDecision中
 /**
  * This class decides whether we should stop for destination.
  * situation.

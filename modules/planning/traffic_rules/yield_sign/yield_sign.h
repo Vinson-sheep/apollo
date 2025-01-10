@@ -32,6 +32,7 @@
 namespace apollo {
 namespace planning {
 
+// 停车让行的处理逻辑与交通灯一致
 class YieldSign : public TrafficRule {
  public:
   bool Init(const std::string& name,

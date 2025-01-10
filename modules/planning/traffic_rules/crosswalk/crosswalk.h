@@ -32,6 +32,7 @@
 namespace apollo {
 namespace planning {
 
+// 在对遇行人横道的情况进行处理，首先从地图中获取所有的人行横道，然后其进行遍历
 class Crosswalk : public TrafficRule {
  public:
   bool Init(const std::string& name,

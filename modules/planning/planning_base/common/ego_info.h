@@ -79,15 +79,17 @@ class EgoInfo {
 
   // stitched point (at stitching mode)
   // or real vehicle point (at non-stitching mode)
+  // 起始点（在轨迹拼接模式下就是轨迹拼接点）或者车辆位置点（规划处于非轨迹拼接模式下）
   common::TrajectoryPoint start_point_;
 
   // ego vehicle state
+  // 车辆状态
   common::VehicleState vehicle_state_;
-
+  // 前方畅通距离，默认为300M
   double front_clear_distance_ = FLAGS_default_front_clear_distance;
-
+  // 自车配置，主要包括车辆品牌，长宽高，轴距，最大加速度等车辆物理参数
   common::VehicleConfig ego_vehicle_config_;
-
+  // 自车二维边界框，车辆航向方向为长度，其法向量为宽度
   common::math::Box2d ego_box_;
 
   apollo::hdmap::LaneWaypoint adc_waypoint_;

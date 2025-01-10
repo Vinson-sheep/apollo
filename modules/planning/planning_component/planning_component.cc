@@ -143,10 +143,12 @@ bool PlanningComponent::Proc(
         localization_estimate) {
   ACHECK(prediction_obstacles != nullptr);
 
+  // 检查是否需要重新申请路径
   // check and process possible rerouting request
   CheckRerouting();
 
   // process fused input data
+  // 将数据全部装载到local_view，给后续使用
   local_view_.prediction_obstacles = prediction_obstacles;
   local_view_.chassis = chassis;
   local_view_.localization_estimate = localization_estimate;
@@ -193,11 +195,13 @@ bool PlanningComponent::Proc(
     }
   }
 
+  // 输入性检查，如果检查失败，则退出
   if (!CheckInput()) {
     AINFO << "Input check failed";
     return false;
   }
 
+  // 如果配置文件为深度学习模式，非主流方法，跳过
   if (config_.learning_mode() != PlanningConfig::NO_LEARNING) {
     // data process for online training
     message_process_.OnChassis(*local_view_.chassis);
@@ -212,6 +216,7 @@ bool PlanningComponent::Proc(
   }
 
   // publish learning data frame for RL test
+  // 非主流方法，跳过
   if (config_.learning_mode() == PlanningConfig::RL_TEST) {
     PlanningLearningData planning_learning_data;
     LearningDataFrame* learning_data_frame =
@@ -228,12 +233,18 @@ bool PlanningComponent::Proc(
     return true;
   }
 
+  // adc_trajectory_pb为最终获取的路径信息
   ADCTrajectory adc_trajectory_pb;
+  // 这里配置的是on_lane_planning方法，路径规划函数入口
   planning_base_->RunOnce(local_view_, &adc_trajectory_pb);
+
+  // 此时路径规划已经完成，获取路径规划计算最开始的时间戳，参考RunOnce时间戳赋值
+  // 获取计算完成的时间戳，参看FillHeader时间戳赋值
   auto start_time = adc_trajectory_pb.header().timestamp_sec();
   common::util::FillHeader(node_->Name(), &adc_trajectory_pb);
-
+  
   SetLocation(&adc_trajectory_pb);
+  // 因为时间戳在header改变，更改路径规划相对时间
   // modify trajectory relative time due to the timestamp change in header
   const double dt = start_time - adc_trajectory_pb.header().timestamp_sec();
   for (auto& p : *adc_trajectory_pb.mutable_trajectory_point()) {
@@ -249,6 +260,7 @@ bool PlanningComponent::Proc(
     command_status.set_command_id(local_view_.planning_command->command_id());
   }
 
+  // 发布路径信息
   ADCTrajectory::TrajectoryType current_trajectory_type =
       adc_trajectory_pb.trajectory_type();
   if (adc_trajectory_pb.header().status().error_code() !=
@@ -264,6 +276,7 @@ bool PlanningComponent::Proc(
   }
   command_status_writer_->Write(command_status);
 
+  // 记录历史轨迹信息
   // record in history
   auto* history = injector_->history();
   history->Add(adc_trajectory_pb);

@@ -643,13 +643,17 @@ bool ReferenceLine::IsOnLane(const common::math::Vec2d& vec2d_point) const {
 }
 
 bool ReferenceLine::IsOnLane(const SLBoundary& sl_boundary) const {
+  // 障碍物不在参考线上
   if (sl_boundary.end_s() < 0 || sl_boundary.start_s() > Length()) {
     return false;
   }
+  // 获取middle_s
   double middle_s = (sl_boundary.start_s() + sl_boundary.end_s()) / 2.0;
   double lane_left_width = 0.0;
   double lane_right_width = 0.0;
+  // 获取车道左右宽度
   map_path_.GetLaneWidth(middle_s, &lane_left_width, &lane_right_width);
+  // 判断是否在车道上，很好理解
   return sl_boundary.start_l() <= lane_left_width &&
          sl_boundary.end_l() >= -lane_right_width;
 }

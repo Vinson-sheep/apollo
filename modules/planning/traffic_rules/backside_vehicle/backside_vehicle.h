@@ -31,6 +31,7 @@
 namespace apollo {
 namespace planning {
 
+// 后向来车规则
 class BacksideVehicle : public TrafficRule {
  public:
   bool Init(const std::string& name,

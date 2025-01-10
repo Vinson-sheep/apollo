@@ -154,10 +154,14 @@ bool Frame::CreateReferenceLineInfo(
   auto ref_line_iter = reference_lines.begin();
   auto segments_iter = segments.begin();
   std::size_t ref_line_index = 0;
+  // 循环遍历参考线
   while (ref_line_iter != reference_lines.end()) {
+    // 如果是目的地停车点
     if (segments_iter->StopForDestination()) {
+      // 靠近目的地为true
       is_near_destination_ = true;
     }
+    // 添加当前车辆位置，路径规划起始点，参考线信息
     reference_line_info_.emplace_back(vehicle_state_, planning_start_point_,
                                       *ref_line_iter, *segments_iter);
     reference_line_info_.back().set_index(ref_line_index);
@@ -165,9 +169,10 @@ bool Frame::CreateReferenceLineInfo(
     ++ref_line_iter;
     ++segments_iter;
   }
-
+  // 如果有两条参考线
   if (reference_line_info_.size() == 2) {
     common::math::Vec2d xy_point(vehicle_state_.x(), vehicle_state_.y());
+    // 获取当前车辆位置在第一条和第二条参考线上的sl值
     common::SLPoint first_sl;
     if (!reference_line_info_.front().reference_line().XYToSL(xy_point,
                                                               &first_sl)) {
@@ -179,6 +184,7 @@ bool Frame::CreateReferenceLineInfo(
       return false;
     }
     const double offset = first_sl.l() - second_sl.l();
+    // 计算两个参考线之间的偏移，也就是当前车辆位置参考线之间的距离
     reference_line_info_.front().SetOffsetToOtherReferenceLine(offset);
     reference_line_info_.back().SetOffsetToOtherReferenceLine(-offset);
   }
@@ -188,8 +194,10 @@ bool Frame::CreateReferenceLineInfo(
   }
   bool has_valid_reference_line = false;
   ref_line_index = 0;
+  // 循环遍历reference_line_info_
   for (auto iter = reference_line_info_.begin();
        iter != reference_line_info_.end();) {
+    // 将障碍物关联到参考线
     if (!iter->Init(obstacles(), target_speed)) {
       reference_line_info_.erase(iter++);
     } else {
@@ -338,11 +346,13 @@ Status Frame::Init(
     const std::vector<routing::LaneWaypoint> &future_route_waypoints,
     const EgoInfo *ego_info) {
   // TODO(QiL): refactor this to avoid redundant nullptr checks in scenarios.
+  // 初始化frame数据，添加目标障碍物，交通灯信息
   auto status = InitFrameData(vehicle_state_provider, ego_info);
   if (!status.ok()) {
     AERROR << "failed to init frame:" << status.ToString();
     return status;
   }
+  // 创建参考线信息，主要是将障碍物关联到参考线
   if (!CreateReferenceLineInfo(reference_lines, segments)) {
     const std::string msg = "Failed to init reference line info.";
     AERROR << msg;
@@ -364,26 +374,33 @@ Status Frame::InitForOpenSpace(
 Status Frame::InitFrameData(
     const common::VehicleStateProvider *vehicle_state_provider,
     const EgoInfo *ego_info) {
+  // 获取地图指针
   hdmap_ = hdmap::HDMapUtil::BaseMapPtr();
   CHECK_NOTNULL(hdmap_);
+  // 获取当前车辆位置
   vehicle_state_ = vehicle_state_provider->vehicle_state();
+  // 检查当前车辆状态是否有效
   if (!util::IsVehicleStateValid(vehicle_state_)) {
     AERROR << "Adc init point is not set";
     return Status(ErrorCode::PLANNING_ERROR, "Adc init point is not set");
   }
   ADEBUG << "Enabled align prediction time ? : " << std::boolalpha
          << FLAGS_align_prediction_time;
-
+  // 是否对齐预测时间戳
   if (FLAGS_align_prediction_time) {
     auto prediction = *(local_view_.prediction_obstacles);
     AlignPredictionTime(vehicle_state_.timestamp(), &prediction);
     local_view_.prediction_obstacles->CopyFrom(prediction);
   }
+  // 添加目标障碍物
   for (auto &ptr :
        Obstacle::CreateObstacles(*local_view_.prediction_obstacles)) {
+    // 添加到frame的obstacles中去
     AddObstacle(*ptr);
   }
+  // 如果规划起始速度为0
   if (planning_start_point_.v() < 1e-3) {
+    // 查询碰撞障碍物
     const auto *collision_obstacle = FindCollisionObstacle(ego_info);
     if (collision_obstacle != nullptr) {
       const std::string msg = absl::StrCat("Found collision with obstacle: ",
@@ -394,8 +411,9 @@ Status Frame::InitFrameData(
     }
   }
 
+  // 读取交通灯信息
   ReadTrafficLights();
-
+  // 读取pad行为
   ReadPadMsgDrivingAction();
 
   return Status::OK();
@@ -493,16 +511,19 @@ void Frame::ReadTrafficLights() {
   traffic_lights_.clear();
 
   const auto traffic_light_detection = local_view_.traffic_light;
+  // 如果交通灯为空
   if (traffic_light_detection == nullptr) {
     return;
   }
+  // 计算感知信息时间差
   const double delay =
       traffic_light_detection->header().timestamp_sec() - Clock::NowInSeconds();
   if (delay > FLAGS_signal_expire_time_sec) {
     ADEBUG << "traffic signals msg is expired, delay = " << delay
-           << " seconds.";
+           << " seconds.";  // 如果延迟超过5秒
     return;
   }
+  // 交通灯赋值
   for (const auto &traffic_light : traffic_light_detection->traffic_light()) {
     traffic_lights_[traffic_light.id()] = &traffic_light;
   }

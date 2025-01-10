@@ -29,6 +29,7 @@
 namespace apollo {
 namespace planning {
 
+// 对交通灯的处理是红灯停，绿灯行，黄灯也停
 class TrafficLight : public TrafficRule {
  public:
   bool Init(const std::string& name,

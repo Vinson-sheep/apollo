@@ -107,12 +107,14 @@ Status TrafficDecider::Execute(Frame *frame,
   CHECK_NOTNULL(frame);
   CHECK_NOTNULL(reference_line_info);
 
+  // 通过for循环来遍历配置
   for (const auto &rule : rule_list_) {
     if (!rule) {
       AERROR << "Could not find rule ";
       continue;
     }
     rule->Reset();
+    // 交通决策实施，在traffic_rules下查看每一个决策ApplyRule函数
     rule->ApplyRule(frame, reference_line_info);
     ADEBUG << "Applied rule " << rule->Getname();
   }
