@@ -223,18 +223,22 @@ const Obstacle *Frame::CreateStopObstacle(
     ReferenceLineInfo *const reference_line_info,
     const std::string &obstacle_id, const double obstacle_s,
     double stop_wall_width) {
+  // 如果参考线为空
   if (reference_line_info == nullptr) {
     AERROR << "reference_line_info nullptr";
     return nullptr;
   }
-
+  // 获取参考线
   const auto &reference_line = reference_line_info->reference_line();
+  // 获取box中心s
   const double box_center_s = obstacle_s + FLAGS_virtual_stop_wall_length / 2.0;
+  // 获取航向角度
   auto box_center = reference_line.GetReferencePoint(box_center_s);
   double heading = reference_line.GetReferencePoint(obstacle_s).heading();
+  // 创建障碍物墙Box
   Box2d stop_wall_box{box_center, heading, FLAGS_virtual_stop_wall_length,
                       stop_wall_width};
-
+  // 创建静态虚拟障碍物
   return CreateStaticVirtualObstacle(obstacle_id, stop_wall_box);
 }
 

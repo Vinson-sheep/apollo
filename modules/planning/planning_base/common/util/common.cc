@@ -22,6 +22,7 @@ namespace util {
 
 using apollo::common::util::WithinBound;
 
+// 创建虚拟障碍物墙及停止原因
 /*
  * @brief: build virtual obstacle of stop wall, and add STOP decision
  */
@@ -34,14 +35,15 @@ int BuildStopDecision(const std::string& stop_wall_id, const double stop_line_s,
                       double stop_wall_width) {
   CHECK_NOTNULL(frame);
   CHECK_NOTNULL(reference_line_info);
-
+  // 获取参考线
   // check
   const auto& reference_line = reference_line_info->reference_line();
+  // 判断stop_line_s是否在参考线范围内
   if (!WithinBound(0.0, reference_line.Length(), stop_line_s)) {
     AERROR << "stop_line_s[" << stop_line_s << "] is not on reference line";
     return 0;
   }
-
+  // 创建虚拟障碍物墙
   // create virtual stop wall
   const auto* obstacle =
       frame->CreateStopObstacle(reference_line_info, stop_wall_id,
@@ -50,15 +52,19 @@ int BuildStopDecision(const std::string& stop_wall_id, const double stop_line_s,
     AERROR << "Failed to create obstacle [" << stop_wall_id << "]";
     return -1;
   }
+  // 将障碍物关联到参考线上
   const Obstacle* stop_wall = reference_line_info->AddObstacle(obstacle);
   if (!stop_wall) {
     AERROR << "Failed to add obstacle[" << stop_wall_id << "]";
     return -1;
   }
 
+  // 建立停止决策
   // build stop decision
   const double stop_s = stop_line_s - stop_distance;
+  // 获取停止点
   const auto& stop_point = reference_line.GetReferencePoint(stop_s);
+  // 获取停止点航向角度
   const double stop_heading =
       reference_line.GetReferencePoint(stop_s).heading();
 
@@ -74,7 +80,7 @@ int BuildStopDecision(const std::string& stop_wall_id, const double stop_line_s,
   for (size_t i = 0; i < wait_for_obstacles.size(); ++i) {
     stop_decision->add_wait_for_obstacle(wait_for_obstacles[i]);
   }
-
+  // 添加纵向决策
   auto* path_decision = reference_line_info->path_decision();
   path_decision->AddLongitudinalDecision(decision_tag, stop_wall->Id(), stop);
 
@@ -90,9 +96,9 @@ int BuildStopDecision(const std::string& stop_wall_id,
                       ReferenceLineInfo* const reference_line_info) {
   CHECK_NOTNULL(frame);
   CHECK_NOTNULL(reference_line_info);
-
+  // 获取参考线
   const auto& reference_line = reference_line_info->reference_line();
-
+  //
   // create virtual stop wall
   const auto* obstacle =
       frame->CreateStopObstacle(stop_wall_id, lane_id, lane_s);

@@ -57,23 +57,28 @@ bool IsDifferentRouting(const PlanningCommand& first,
 double GetADCStopDeceleration(
     apollo::common::VehicleStateProvider* vehicle_state,
     const double adc_front_edge_s, const double stop_line_s) {
+  // 获取车辆当前速度
   double adc_speed = vehicle_state->linear_velocity();
+  // 获取车辆时的最大速度 0.2m/s
   const double max_adc_stop_speed = common::VehicleConfigHelper::Instance()
                                         ->GetConfig()
                                         .vehicle_param()
                                         .max_abs_speed_when_stopped();
+  // 如果当前车速小于0.2m/s，则返回0.0
   if (adc_speed < max_adc_stop_speed) {
     return 0.0;
   }
 
   double stop_distance = 0;
-
+  // 如果车辆位于stop_line_s后面
   if (stop_line_s > adc_front_edge_s) {
     stop_distance = stop_line_s - adc_front_edge_s;
   }
+  // 如果车辆驶过stop_line_s，在stop_line_s前方
   if (stop_distance < 1e-5) {
     return std::numeric_limits<double>::max();
   }
+  // 重要公式 v*v / 2s = a
   return (adc_speed * adc_speed) / (2 * stop_distance);
 }
 
