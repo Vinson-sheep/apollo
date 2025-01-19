@@ -146,6 +146,7 @@ bool DiscretePointsReferenceLineSmoother::FemPosSmooth(
 
   FemPosDeviationSmoother smoother(fem_pos_config);
 
+  // 为什么？
   // box contraints on pos are used in fem pos smoother, thus shrink the
   // bounds by 1.0 / sqrt(2.0) 缩减边界
   std::vector<double> box_bounds = bounds;

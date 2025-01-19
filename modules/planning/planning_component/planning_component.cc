@@ -152,6 +152,8 @@ bool PlanningComponent::Proc(
   local_view_.prediction_obstacles = prediction_obstacles;
   local_view_.chassis = chassis;
   local_view_.localization_estimate = localization_estimate;
+
+  // 如果来了新命令，则加载新命令
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!local_view_.planning_command ||
@@ -161,18 +163,21 @@ bool PlanningComponent::Proc(
           std::make_shared<PlanningCommand>(planning_command_);
     }
   }
+  // 加载交通灯和局部地图
   {
     std::lock_guard<std::mutex> lock(mutex_);
     local_view_.traffic_light =
         std::make_shared<TrafficLightDetection>(traffic_light_);
     local_view_.relative_map = std::make_shared<MapMsg>(relative_map_);
   }
+  // 加载pad操作信息
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!local_view_.pad_msg ||
         !common::util::IsProtoEqual(local_view_.pad_msg->header(),
                                     pad_msg_.header())) {
       // Check if "CLEAR_PLANNING" PadMessage is received and process.
+      // 如果pad要求清除所有指令
       if (pad_msg_.action() == PadMessage::CLEAR_PLANNING) {
         local_view_.planning_command = nullptr;
         planning_command_.Clear();
@@ -180,10 +185,12 @@ bool PlanningComponent::Proc(
       local_view_.pad_msg = std::make_shared<PadMessage>(pad_msg_);
     }
   }
+  // 加载故事？
   {
     std::lock_guard<std::mutex> lock(mutex_);
     local_view_.stories = std::make_shared<Stories>(stories_);
   }
+  // 加载人机交互指令
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!local_view_.control_interactive_msg ||
@@ -288,6 +295,8 @@ void PlanningComponent::CheckRerouting() {
   auto* rerouting = injector_->planning_context()
                         ->mutable_planning_status()
                         ->mutable_rerouting();
+  // 检查是否需要rerouting
+  // set_need_rerouting函数调用在frame的Rerouting中
   if (!rerouting->need_rerouting()) {
     return;
   }
@@ -300,6 +309,8 @@ void PlanningComponent::CheckRerouting() {
   rerouting->set_need_rerouting(false);
 }
 
+// 安全性校验
+// 如果校验失败则返回空轨迹
 bool PlanningComponent::CheckInput() {
   ADCTrajectory trajectory_pb;
 

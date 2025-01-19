@@ -59,6 +59,7 @@ NaviPlanning::~NaviPlanning() {
 std::string NaviPlanning::Name() const { return "navi_planning"; }
 
 Status NaviPlanning::Init(const PlanningConfig& config) {
+  // 检查配置（没有任何处理）
   if (!CheckPlanningConfig(config)) {
     return Status(ErrorCode::PLANNING_ERROR,
                   "planning config error: " + config.DebugString());

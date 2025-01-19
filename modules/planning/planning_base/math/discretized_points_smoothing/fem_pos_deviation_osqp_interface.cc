@@ -27,6 +27,7 @@
 namespace apollo {
 namespace planning {
 
+// 变量xy交替
 bool FemPosDeviationOsqpInterface::Solve() {
   // Sanity Check 合理性检查
   if (ref_points_.empty()) {
@@ -39,7 +40,7 @@ bool FemPosDeviationOsqpInterface::Solve() {
     return false;
   }
 
-  if (ref_points_.size() < 3) {
+  if (ref_points_.size() < 3) { // 算法至少需要三个点
     AERROR << "ref_points size smaller than 3, solver early terminates";
     return false;
   }
@@ -53,7 +54,7 @@ bool FemPosDeviationOsqpInterface::Solve() {
   // 举例：这里是15个点，其中每个点都x,y方向，所以有30个变量，30个约束
   num_of_points_ = static_cast<int>(ref_points_.size());
   num_of_variables_ = num_of_points_ * 2;
-  num_of_constraints_ = num_of_variables_;
+  // num_of_constraints_ = num_of_variables_;  // unused
 
   // 计算二次规划P矩阵，二次项参数
   // Calculate kernel
@@ -93,7 +94,7 @@ bool FemPosDeviationOsqpInterface::Solve() {
   settings->scaled_termination = scaled_termination_;
   settings->warm_start = warm_start_;
 
-  OSQPWorkspace* work = nullptr;
+  OSQPWorkspace* work = nullptr;  // 存放结果
 
   bool res = OptimizeWithOsqp(num_of_variables_, lower_bounds.size(), &P_data,
                               &P_indices, &P_indptr, &A_data, &A_indices,
@@ -152,6 +153,7 @@ void FemPosDeviationOsqpInterface::CalculateKernel(
   // |0,     0,       0,       0,       0,       X+Y+Z|
 
   // Only upper triangle needs to be filled
+  // c_int是行索引，c_float是权重
   std::vector<std::vector<std::pair<c_int, c_float>>> columns;
   columns.resize(num_of_variables_);
   int col_num = 0;
@@ -240,6 +242,7 @@ void FemPosDeviationOsqpInterface::CalculateAffineConstraint(
     std::vector<c_float>* A_data, std::vector<c_int>* A_indices,
     std::vector<c_int>* A_indptr, std::vector<c_float>* lower_bounds,
     std::vector<c_float>* upper_bounds) {
+  // A就是大型的I，此处对每一个sl坐标使用box约束
   int ind_A = 0;
   for (int i = 0; i < num_of_variables_; ++i) {
     A_data->push_back(1.0);
@@ -248,7 +251,7 @@ void FemPosDeviationOsqpInterface::CalculateAffineConstraint(
     ++ind_A;
   }
   A_indptr->push_back(ind_A);
-
+  // 除了l有约束之外，s也有相似的约束
   for (int i = 0; i < num_of_points_; ++i) {
     const auto& ref_point_xy = ref_points_[i];
     upper_bounds->push_back(ref_point_xy.first + bounds_around_refs_[i]);
@@ -258,7 +261,7 @@ void FemPosDeviationOsqpInterface::CalculateAffineConstraint(
   }
 }
 
-// 原始热启动
+// 原始热启动 (直接使用anchor_points，xy交替)
 void FemPosDeviationOsqpInterface::SetPrimalWarmStart(
     std::vector<c_float>* primal_warm_start) {
   CHECK_EQ(ref_points_.size(), static_cast<size_t>(num_of_points_));
@@ -268,6 +271,9 @@ void FemPosDeviationOsqpInterface::SetPrimalWarmStart(
   }
 }
 
+
+// J = 0.5 x^T P x + q^T x
+// s.t. l <= Ax <= u
 bool FemPosDeviationOsqpInterface::OptimizeWithOsqp(
     const size_t kernel_dim, const size_t num_affine_constraint,
     std::vector<c_float>* P_data, std::vector<c_int>* P_indices,

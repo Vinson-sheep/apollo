@@ -59,7 +59,7 @@ bool FemPosDeviationSqpOsqpInterface::Solve() {
   num_of_variables_ = num_of_pos_variables_ + num_of_slack_variables_;
 
   num_of_variable_constraints_ = num_of_variables_;
-  num_of_curvature_constraints_ = num_of_points_ - 2;
+  num_of_curvature_constraints_ = num_of_points_ - 2; // 线性化曲率约束
   num_of_constraints_ =
       num_of_variable_constraints_ + num_of_curvature_constraints_;
 
@@ -121,6 +121,7 @@ bool FemPosDeviationSqpOsqpInterface::Solve() {
   // Initial solution
   bool initial_solve_res = OptimizeWithOsqp(primal_warm_start, &work);
 
+  // 如果求解失败
   if (!initial_solve_res) {
     AERROR << "initial iteration solving fails";
     osqp_cleanup(work);
@@ -133,16 +134,23 @@ bool FemPosDeviationSqpOsqpInterface::Solve() {
 
   // Sequential solution
 
-  int pen_itr = 0;
-  double ctol = 0.0;
-  double original_slack_penalty = weight_curvature_constraint_slack_var_;
-  double last_fvalue = work->info->obj_val;
+  int pen_itr = 0;    // 迭代次数
+  double ctol = 0.0;  // 违反约束的代价数值
+  double original_slack_penalty = weight_curvature_constraint_slack_var_; // 对slack的权重，为什么不用局部变量，而是全局
+  double last_fvalue = work->info->obj_val; // 上一次的cost
 
+  // 基本思路：由于slack的存在导致约束可能被违背，首先使用较小的slack权重获得近似解，然后基于近似解，逐步提高slack的权重，最终
+  // 逼近真实解。这个算法涉及两层循环，算法复杂度较高。
+
+  // 开始迭代
   while (pen_itr < sqp_pen_max_iter_) {
     int sub_itr = 1;
     bool fconverged = false;
 
+    // 循环优化，直到收敛
+    // 相当于自己控制收敛条件
     while (sub_itr < sqp_sub_max_iter_) {
+      // 以上一次迭代结果作为参考xy
       SetPrimalWarmStart(opt_xy_, &primal_warm_start);
       CalculateOffset(opt_xy_, &q);
       CalculateAffineConstraint(opt_xy_, &A_data, &A_indices, &A_indptr,
@@ -167,6 +175,7 @@ bool FemPosDeviationSqpOsqpInterface::Solve() {
       double cur_fvalue = work->info->obj_val;
       double ftol = std::abs((last_fvalue - cur_fvalue) / last_fvalue);
 
+      // 终止条件
       if (ftol < sqp_ftol_) {
         ADEBUG << "merit function value converges at sub itr num " << sub_itr;
         ADEBUG << "merit function value converges to " << cur_fvalue
@@ -179,6 +188,7 @@ bool FemPosDeviationSqpOsqpInterface::Solve() {
       ++sub_itr;
     }
 
+    // 如果没有收敛
     if (!fconverged) {
       AERROR << "Max number of iteration reached";
       weight_curvature_constraint_slack_var_ = original_slack_penalty;
@@ -190,10 +200,12 @@ bool FemPosDeviationSqpOsqpInterface::Solve() {
       return false;
     }
 
+    // 计算违反约束的cost
     ctol = CalculateConstraintViolation(opt_xy_);
 
     ADEBUG << "ctol is " << ctol << ", at pen itr " << pen_itr;
 
+    // 如果曲率约束cost不大，终止算法
     if (ctol < sqp_ctol_) {
       ADEBUG << "constraint satisfied at pen itr num " << pen_itr;
       ADEBUG << "constraint voilation value drops to " << ctol
@@ -207,6 +219,7 @@ bool FemPosDeviationSqpOsqpInterface::Solve() {
       return true;
     }
 
+    // 否则，提高slack代价
     weight_curvature_constraint_slack_var_ *= 10;
     ++pen_itr;
   }
@@ -333,6 +346,7 @@ void FemPosDeviationSqpOsqpInterface::CalculateOffset(
     (*q)[2 * i] = -2.0 * weight_ref_deviation_ * ref_point_xy.first;
     (*q)[2 * i + 1] = -2.0 * weight_ref_deviation_ * ref_point_xy.second;
   }
+  // 尽可能缩小slack
   for (int i = 0; i < num_of_slack_variables_; ++i) {
     (*q)[num_of_pos_variables_ + i] = weight_curvature_constraint_slack_var_;
   }
@@ -340,6 +354,7 @@ void FemPosDeviationSqpOsqpInterface::CalculateOffset(
         << FLAGS_enable_obstacle_potential_field
         << " num_of_points_: " << num_of_points_
         << "point_box_: " << point_box_.size();
+  // 考虑障碍物 （忽略）
   if (FLAGS_enable_obstacle_potential_field &&
       point_box_.size() == num_of_points_ - 1) {
     AINFO << "use obstacle potential field";
@@ -399,6 +414,7 @@ void FemPosDeviationSqpOsqpInterface::CalculateAffineConstraint(
     std::vector<c_float>* upper_bounds) {
   const double scale_factor = 1;
 
+  // 曲率线性化缓存
   std::vector<std::vector<double>> lin_cache;
   for (int i = 1; i < num_of_points_ - 1; ++i) {
     lin_cache.push_back(CalculateLinearizedFemPosParams(points, i));
@@ -453,6 +469,8 @@ void FemPosDeviationSqpOsqpInterface::CalculateAffineConstraint(
   lower_bounds->resize(num_of_constraints_);
   upper_bounds->resize(num_of_constraints_);
 
+  // 计算上下边界
+
   for (int i = 0; i < num_of_points_; ++i) {
     const auto& ref_point_xy = ref_points_[i];
     (*upper_bounds)[i * 2] = ref_point_xy.first + bounds_around_refs_[i];
@@ -461,6 +479,7 @@ void FemPosDeviationSqpOsqpInterface::CalculateAffineConstraint(
     (*lower_bounds)[i * 2 + 1] = ref_point_xy.second - bounds_around_refs_[i];
   }
 
+  // slack->[0, +inf]
   for (int i = 0; i < num_of_slack_variables_; ++i) {
     (*upper_bounds)[num_of_pos_variables_ + i] = 1e20;
     (*lower_bounds)[num_of_pos_variables_ + i] = 0.0;
@@ -549,6 +568,7 @@ double FemPosDeviationSqpOsqpInterface::CalculateConstraintViolation(
 
   double total_length = 0.0;
   auto pre_point = points.front();
+  // 计算参考线总长度
   for (int i = 1; i < num_of_points_; ++i) {
     const auto& cur_point = points[i];
     total_length += std::sqrt((pre_point.first - cur_point.first) *
@@ -570,6 +590,7 @@ double FemPosDeviationSqpOsqpInterface::CalculateConstraintViolation(
     double y_f = points[i - 1].second;
     double y_m = points[i].second;
     double y_l = points[i + 1].second;
+    // 对应线性化前的曲率约束公式，不含slack
     double cviolation = curvature_constraint_sqr -
                         (-2.0 * x_m + x_f + x_l) * (-2.0 * x_m + x_f + x_l) +
                         (-2.0 * y_m + y_f + y_l) * (-2.0 * y_m + y_f + y_l);

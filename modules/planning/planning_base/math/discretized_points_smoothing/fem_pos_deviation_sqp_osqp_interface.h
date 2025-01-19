@@ -30,6 +30,8 @@
 namespace apollo {
 namespace planning {
 
+// 将曲率约束线性化
+// https://zhuanlan.zhihu.com/p/342740447
 class FemPosDeviationSqpOsqpInterface {
  public:
   FemPosDeviationSqpOsqpInterface() = default;

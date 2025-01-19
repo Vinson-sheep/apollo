@@ -29,6 +29,7 @@
 namespace apollo {
 namespace planning {
 
+// Finite Element Method，有限元方法
 /*
  * @brief:
  * This class solve an optimization problem:

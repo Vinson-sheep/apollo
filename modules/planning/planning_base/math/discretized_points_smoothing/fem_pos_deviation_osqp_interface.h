@@ -117,7 +117,7 @@ class FemPosDeviationOsqpInterface {
   // Optimization problem definitions
   int num_of_points_ = 0;
   int num_of_variables_ = 0;
-  int num_of_constraints_ = 0;
+  // int num_of_constraints_ = 0;
 
   // Optimized_result
   std::vector<double> x_;

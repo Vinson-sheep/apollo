@@ -96,6 +96,7 @@ size_t DiscretizedTrajectory::QueryNearestPoint(
 
 size_t DiscretizedTrajectory::QueryNearestPointWithBuffer(
     const common::math::Vec2d& position, const double buffer) const {
+  // 遍历所有轨迹点，找出最近点的索引
   double dist_sqr_min = std::numeric_limits<double>::max();
   size_t index_min = 0;
   for (size_t i = 0; i < size(); ++i) {

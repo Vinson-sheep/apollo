@@ -326,7 +326,9 @@ double ReferenceLineProvider::LastTimeDelay() {
 // 根据relative_map或者pnc_map计算参考线
 bool ReferenceLineProvider::GetReferenceLines(
     std::list<ReferenceLine> *reference_lines,
-    std::list<hdmap::RouteSegments> *segments) {
+    std::list<hdmap::RouteSegments> *segments) {、
+  
+  // 安全校验
   CHECK_NOTNULL(reference_lines);
   CHECK_NOTNULL(segments);
   if (!has_planning_command_) {
@@ -399,11 +401,13 @@ void ReferenceLineProvider::PrioritizeChangeLane(
   }
 }
 
-// 基于高清地图和当前车道信息计算参考线
+// 基于局部高清地图和当前车道信息计算参考线
 // 这里的relative_map只是一个指针，似乎是个数据体而已，不是具体的地图
 bool ReferenceLineProvider::GetReferenceLinesFromRelativeMap(
     std::list<ReferenceLine> *reference_lines,
     std::list<hdmap::RouteSegments> *segments) {
+  
+  // 安全性校验
   CHECK_GE(relative_map_->navigation_path_size(), 0);
   CHECK_NOTNULL(reference_lines);
   CHECK_NOTNULL(segments);
@@ -702,6 +706,8 @@ bool ReferenceLineProvider::CreateRouteSegments(
 }
 
 // reference_lines和segments其实是参考线不同的表征
+// segments存放来自地图的原始结果
+// reference_lines存放平滑后的路径点
 bool ReferenceLineProvider::CreateReferenceLine(
     std::list<ReferenceLine> *reference_lines,
     std::list<hdmap::RouteSegments> *segments) {
@@ -723,13 +729,14 @@ bool ReferenceLineProvider::CreateReferenceLine(
     AERROR << "Current pnc map is null! " << command.DebugString();
     return false;
   }
-  // 基于pnc地图路由获取segments
+  // 调用pnc地图接口获取segments
   if (!CreateRouteSegments(vehicle_state, segments)) {
     AERROR << "Failed to create reference line from routing";
     return false;
   }
   // 如果有新routing，或者不使用参考线拼接
   if (is_new_command_ || !FLAGS_enable_reference_line_stitching) {
+    // 遍历所有参考线
     for (auto iter = segments->begin(); iter != segments->end();) {
       reference_lines->emplace_back();
       // 如果优化失败，则剔除
@@ -984,14 +991,14 @@ AnchorPoint ReferenceLineProvider::GetAnchorPoint(
     const ReferenceLine &reference_line, double s) const {
   AnchorPoint anchor;
   // 获取纵向边界
-  anchor.longitudinal_bound = smoother_config_.longitudinal_boundary_bound();
+  anchor.longitudinal_bound = smoother_config_.longitudinal_boundary_bound(); // 2.0
   auto ref_point = reference_line.GetReferencePoint(s);
 
   // 如果lane_waypoints为空
   if (ref_point.lane_waypoints().empty()) {
     anchor.path_point = ref_point.ToPathPoint(s);
     // 根据配置文件获取横向边界
-    anchor.lateral_bound = smoother_config_.max_lateral_boundary_bound();
+    anchor.lateral_bound = smoother_config_.max_lateral_boundary_bound(); // 0.5
     return anchor;
   }
 
@@ -1077,7 +1084,7 @@ void ReferenceLineProvider::GetAnchorPoints(
   CHECK_NOTNULL(anchor_points);
   const double interval = smoother_config_.max_constraint_interval();
 
-  // 根据参考线的长度及采样间隔获取锚点个数
+  // 根据参考线的长度及采样间隔获取锚点个数 (intervel = 0.25)
   int num_of_anchors =
       std::max(2, static_cast<int>(reference_line.Length() / interval + 0.5));
   std::vector<double> anchor_s;

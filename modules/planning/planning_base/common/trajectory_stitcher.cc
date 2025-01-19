@@ -150,6 +150,8 @@ std::vector<TrajectoryPoint> TrajectoryStitcher::ComputeStitchingTrajectory(
   // 根据当前帧时间戳以及ADC实际位置信息（做比较），在上一帧轨迹中寻找匹配点，将上一帧轨迹中匹配点向前看0.1s
   // 所对应的轨迹点作为当前帧的规划起始状态点，待当前帧轨迹生成轨迹后，再和上一帧中所选择的轨迹
   // 起始点前一段距离的轨迹点进行拼接，形成一条完整的车辆运动轨迹，发送给下游控制模块
+
+  // 检查档位，NEUTRAL/DRIVE/REVERSE
   // 2. check replan by GEAR switch
   if (vehicle_chassis.has_gear_location()) {
     static canbus::Chassis::GearPosition gear_pos =
@@ -157,7 +159,7 @@ std::vector<TrajectoryPoint> TrajectoryStitcher::ComputeStitchingTrajectory(
     if (gear_pos == canbus::Chassis::GEAR_NEUTRAL &&
         vehicle_chassis.gear_location() == canbus::Chassis::GEAR_DRIVE) {
       gear_pos = vehicle_chassis.gear_location();
-      /// 重规划原因：前后换档
+      /// 重规划原因：空档变前进档
       const std::string msg =
           "gear change from n to d, replan to avoid large station error";
       AERROR << msg;
@@ -166,6 +168,7 @@ std::vector<TrajectoryPoint> TrajectoryStitcher::ComputeStitchingTrajectory(
       return ComputeReinitStitchingTrajectory(planning_cycle_time,
                                               vehicle_state);
     }
+    // 记录当前档位
     gear_pos = vehicle_chassis.gear_location();
   }
 
@@ -176,7 +179,8 @@ std::vector<TrajectoryPoint> TrajectoryStitcher::ComputeStitchingTrajectory(
   // 如果是控制交互触发的重规划
   if (need_replan_by_control_interactive(current_timestamp, replan_reason,
                                          control_interactive_msg)) {
-    // 进入函数？？
+    // 重规划原因：人机交互指令
+    // ？？
     return ComputeControlInteractiveStitchingTrajectory(
         planning_cycle_time, vehicle_state, time_matched_point,
         control_interactive_msg);
@@ -188,6 +192,7 @@ std::vector<TrajectoryPoint> TrajectoryStitcher::ComputeStitchingTrajectory(
 
   // 计算实际位置和时间匹配点的横纵向误差
   // 根据车辆位置计算sd
+  // 但此处直接用离散最近点作投影点，是不是太勉强
   auto frenet_sd = ComputePositionProjection(
       vehicle_state.x(), vehicle_state.y(),
       prev_trajectory->TrajectoryPointAt(
@@ -197,6 +202,7 @@ std::vector<TrajectoryPoint> TrajectoryStitcher::ComputeStitchingTrajectory(
   if (replan_by_offset) {
     if (vehicle_chassis.has_parking_brake()) {
       static bool parking_brake = true;
+      // 非刹车转刹车
       if (parking_brake && !vehicle_chassis.parking_brake()) {
         parking_brake = vehicle_chassis.parking_brake();
         // 重规划原因：刹车
@@ -223,31 +229,38 @@ std::vector<TrajectoryPoint> TrajectoryStitcher::ComputeStitchingTrajectory(
     ADEBUG << "Control lateral diff: " << lat_diff
            << ", longitudinal diff: " << lon_diff
            << ", time diff: " << time_diff;
-    // 如果纵向误差超出阈值
+
+    // 如果横向误差超出阈值
+    // 本质上是上一帧轨迹与车辆状态的横向距离匹配不上
     if (std::fabs(lat_diff) > FLAGS_replan_lateral_distance_threshold) {
       const std::string msg = absl::StrCat(
           "the distance between matched point and actual position is too "
           "large. Replan is triggered. lat_diff = ",
           lat_diff);
       AERROR << msg;
-      // 重规划原因：纵向值超出阈值
+      // 上一条轨迹不合法：横向值超出阈值
       *replan_reason = msg;
       // 进入函数，主要利用自行车模型预测未来位置
       return ComputeReinitStitchingTrajectory(planning_cycle_time,
                                               vehicle_state);
     }
 
+    // 如果纵向误差超出阈值
+    // 本质上是上一帧轨迹与车辆状态的横向距离匹配不上
     if (std::fabs(lon_diff) > FLAGS_replan_longitudinal_distance_threshold) {
       const std::string msg = absl::StrCat(
           "the distance between matched point and actual position is too "
           "large. Replan is triggered. lon_diff = ",
           lon_diff);
       AERROR << msg;
+      // 上一条轨迹不合法：纵向值超出阈值
       *replan_reason = msg;
+      // 进入函数，主要利用自行车模型预测未来位置
       return ComputeReinitStitchingTrajectory(planning_cycle_time,
                                               vehicle_state);
     }
 
+    // 虽然当前位置与上一帧位置匹配上了，但时间匹配不上
     if (std::fabs(time_diff) > FLAGS_replan_time_threshold) {
       const std::string msg = absl::StrCat(
           "the difference between time matched point relative time and "
@@ -255,7 +268,9 @@ std::vector<TrajectoryPoint> TrajectoryStitcher::ComputeStitchingTrajectory(
           "large. Replan is triggered. time_diff = ",
           time_diff);
       AERROR << msg;
+      // 上一条轨迹不合法：匹配时间超出阈值
       *replan_reason = msg;
+      // 进入函数，主要利用自行车模型预测未来位置
       return ComputeReinitStitchingTrajectory(planning_cycle_time,
                                               vehicle_state);
     }
@@ -291,6 +306,7 @@ std::vector<TrajectoryPoint> TrajectoryStitcher::ComputeStitchingTrajectory(
   // 获取拼接轨迹最后一个点的s值
   const double zero_s = stitching_trajectory.back().path_point().s();
   for (auto& tp : stitching_trajectory) {
+    // 上一条轨迹不合法：无法给出合理路径点
     if (!tp.has_path_point()) {
       *replan_reason = "replan for previous trajectory missed path point";、
       // 进入函数，主要利用自行车模型预测未来位置
@@ -379,7 +395,7 @@ bool TrajectoryStitcher::need_replan_by_necessary_check(
 bool TrajectoryStitcher::need_replan_by_control_interactive(
     const double current_timestamp, std::string* replan_reason,
     const control::ControlInteractiveMsg& control_interactive_msg) {
-  // 上一次控制交互时间和当前时间差距过大
+  // 上一次控制交互时间和当前时间差距过大，不处理
   const double rel_time =
       current_timestamp - control_interactive_msg.header().timestamp_sec();
   if (rel_time > 0.5) {

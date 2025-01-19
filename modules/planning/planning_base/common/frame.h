@@ -91,7 +91,7 @@ class Frame {
 
   std::string DebugString() const;
 
-  const PublishableTrajectory &ComputedTrajectory() const;
+  // const PublishableTrajectory &ComputedTrajectory() const;
 
   void RecordInputDebug(planning_internal::Debug *debug);
 

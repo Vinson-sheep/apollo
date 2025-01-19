@@ -144,6 +144,7 @@ void Frame::UpdateReferenceLinePriority(
   }
 }
 
+// 将障碍物和目标速度关联到参考线
 bool Frame::CreateReferenceLineInfo(
     const std::list<ReferenceLine> &reference_lines,
     const std::list<hdmap::RouteSegments> &segments) {
@@ -188,16 +189,19 @@ bool Frame::CreateReferenceLineInfo(
     reference_line_info_.front().SetOffsetToOtherReferenceLine(offset);
     reference_line_info_.back().SetOffsetToOtherReferenceLine(-offset);
   }
-  double target_speed = FLAGS_default_cruise_speed;
+  // 计算目标速度
+  double target_speed = FLAGS_default_cruise_speed; // 10m/s
   if (local_view_.planning_command->has_target_speed()) {
+    // 如果指令包含目标速度，则使用目标速度
     target_speed = local_view_.planning_command->target_speed();
   }
+  // 
   bool has_valid_reference_line = false;
   ref_line_index = 0;
   // 循环遍历reference_line_info_
   for (auto iter = reference_line_info_.begin();
        iter != reference_line_info_.end();) {
-    // 将障碍物关联到参考线
+    // 将障碍物和参考速度关联到参考线
     if (!iter->Init(obstacles(), target_speed)) {
       reference_line_info_.erase(iter++);
     } else {
@@ -350,12 +354,13 @@ Status Frame::Init(
     const std::vector<routing::LaneWaypoint> &future_route_waypoints,
     const EgoInfo *ego_info) {
   // TODO(QiL): refactor this to avoid redundant nullptr checks in scenarios.
-  // 初始化frame数据，添加目标障碍物，交通灯信息
+  // 初始化自车信息，障碍物，交通灯信息和Pad信息
   auto status = InitFrameData(vehicle_state_provider, ego_info);
   if (!status.ok()) {
     AERROR << "failed to init frame:" << status.ToString();
     return status;
   }
+  // 比OpenSpace多了一步
   // 创建参考线信息，主要是将障碍物关联到参考线
   if (!CreateReferenceLineInfo(reference_lines, segments)) {
     const std::string msg = "Failed to init reference line info.";
@@ -363,9 +368,9 @@ Status Frame::Init(
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
   future_route_waypoints_ = future_route_waypoints;
-  for (auto &reference_line_info : reference_line_info_) {
-    reference_line_info.PrintReferenceSegmentDebugString();
-  }
+  // for (auto &reference_line_info : reference_line_info_) {
+  //   reference_line_info.PrintReferenceSegmentDebugString();
+  // }
   return Status::OK();
 }
 
@@ -375,6 +380,7 @@ Status Frame::InitForOpenSpace(
   return InitFrameData(vehicle_state_provider, ego_info);
 }
 
+// 初始化： 自车状态/障碍物/交通灯/pad信息
 Status Frame::InitFrameData(
     const common::VehicleStateProvider *vehicle_state_provider,
     const EgoInfo *ego_info) {
@@ -390,7 +396,7 @@ Status Frame::InitFrameData(
   }
   ADEBUG << "Enabled align prediction time ? : " << std::boolalpha
          << FLAGS_align_prediction_time;
-  // 是否对齐预测时间戳
+  // 将障碍物轨迹对齐到规划起始时间
   if (FLAGS_align_prediction_time) {
     auto prediction = *(local_view_.prediction_obstacles);
     AlignPredictionTime(vehicle_state_.timestamp(), &prediction);
@@ -404,7 +410,7 @@ Status Frame::InitFrameData(
   }
   // 如果规划起始速度为0
   if (planning_start_point_.v() < 1e-3) {
-    // 查询碰撞障碍物
+    // 如果车辆当前位置与非虚拟障碍物有重叠，报错
     const auto *collision_obstacle = FindCollisionObstacle(ego_info);
     if (collision_obstacle != nullptr) {
       const std::string msg = absl::StrCat("Found collision with obstacle: ",
@@ -423,17 +429,20 @@ Status Frame::InitFrameData(
   return Status::OK();
 }
 
+// 寻找与ego_info碰撞的障碍物
 const Obstacle *Frame::FindCollisionObstacle(const EgoInfo *ego_info) const {
+  // 如果没有障碍物，返回空指针
   if (obstacles_.Items().empty()) {
     return nullptr;
   }
-
+  // 遍历所有障碍物
   const auto &adc_polygon = Polygon2d(ego_info->ego_box());
   for (const auto &obstacle : obstacles_.Items()) {
+    // 如果是虚拟障碍物，则忽略
     if (obstacle->IsVirtual()) {
       continue;
     }
-
+    // 否则，如果有重叠，返回障碍物指针
     const auto &obstacle_polygon = obstacle->PerceptionPolygon();
     if (obstacle_polygon.HasOverlap(adc_polygon)) {
       return obstacle;
@@ -479,18 +488,24 @@ void Frame::RecordInputDebug(planning_internal::Debug *debug) {
 
 void Frame::AlignPredictionTime(const double planning_start_time,
                                 PredictionObstacles *prediction_obstacles) {
+  // 如果没有预测障碍物，或者预测障碍物不合理，直接跳过
   if (!prediction_obstacles || !prediction_obstacles->has_header() ||
       !prediction_obstacles->header().has_timestamp_sec()) {
     return;
   }
   double prediction_header_time =
       prediction_obstacles->header().timestamp_sec();
+  // 遍历所有预测障碍物
   for (auto &obstacle : *prediction_obstacles->mutable_prediction_obstacle()) {
+    // 遍历单个障碍物轨迹
     for (auto &trajectory : *obstacle.mutable_trajectory()) {
+      // 遍历轨迹点
       for (auto &point : *trajectory.mutable_trajectory_point()) {
+        // 将点的相对时间与planning_start_time对齐
         point.set_relative_time(prediction_header_time + point.relative_time() -
                                 planning_start_time);
       }
+      // 删除无效轨迹点
       if (!trajectory.trajectory_point().empty() &&
           trajectory.trajectory_point().begin()->relative_time() < 0) {
         auto it = trajectory.trajectory_point().begin();

@@ -40,6 +40,12 @@ void FemPosDeviationIpoptInterface::get_optimization_results(
   *ptr_y = opt_y_;
 }
 
+// 用于告诉 Ipopt 优化器问题的基本维度和约束信息
+// n: 优化问题中决策变量的数量
+// m: 优化问题中的约束数量
+// nnz_jac_g: 约束函数雅可比矩阵中的非零元素数量。
+// nnz_h_lag: 拉格朗日乘子相关的 Hessian 矩阵的非零元素数量。
+// index_style: C_STYLE 从 0 开始索引 / FORTRAN_STYLE 从 1 开始索引
 bool FemPosDeviationIpoptInterface::get_nlp_info(int& n, int& m, int& nnz_jac_g,
                                                  int& nnz_h_lag,
                                                  IndexStyleEnum& index_style) {
@@ -76,12 +82,17 @@ bool FemPosDeviationIpoptInterface::get_nlp_info(int& n, int& m, int& nnz_jac_g,
   return true;
 }
 
+// 获取上下界
 bool FemPosDeviationIpoptInterface::get_bounds_info(int n, double* x_l,
                                                     double* x_u, int m,
                                                     double* g_l, double* g_u) {
   CHECK_EQ(static_cast<size_t>(n), num_of_variables_);
   CHECK_EQ(static_cast<size_t>(m), num_of_constraints_);
   // variables
+
+  // x 均为无约束
+  // 为什么不把g(x)的某些简单约束移到这里实现
+
   // a. for x, y
   for (size_t i = 0; i < num_of_points_; ++i) {
     size_t index = i * 2;
@@ -100,6 +111,8 @@ bool FemPosDeviationIpoptInterface::get_bounds_info(int n, double* x_l,
   }
 
   // constraints
+
+  // 位置上下边界
   // a. positional deviation constraints
   for (size_t i = 0; i < num_of_points_; ++i) {
     size_t index = i * 2;
@@ -112,6 +125,7 @@ bool FemPosDeviationIpoptInterface::get_bounds_info(int n, double* x_l,
     g_u[index + 1] = ref_points_[i].second + bounds_around_refs_[i];
   }
 
+  // 最大曲率
   // b. curvature constraints
   double ref_total_length = 0.0;
   auto pre_point = ref_points_.front();
@@ -133,6 +147,7 @@ bool FemPosDeviationIpoptInterface::get_bounds_info(int n, double* x_l,
     g_u[i] = curvature_constr_upper * curvature_constr_upper;
   }
 
+  // slack 变量[0, +inf]
   // c. slack var constraints
   for (size_t i = slack_constr_start_index_; i < slack_constr_end_index_; ++i) {
     g_l[i] = 0.0;
@@ -186,6 +201,12 @@ bool FemPosDeviationIpoptInterface::eval_g(int n, const double* x, bool new_x,
   return true;
 }
 
+// new: 用于指示x是否更新
+// nele_jac： 雅可比矩阵中非零元素的数量
+// iRow：雅可比矩阵中非零元素对应的行索引数组
+// jCol：雅可比矩阵中非零元素对应的列索引数组
+// values：雅可比矩阵中非零元素的实际值数组
+//（如果 values == nullptr，表示 Ipopt 仅请求矩阵的结构，而非具体值）
 bool FemPosDeviationIpoptInterface::eval_jac_g(int n, const double* x,
                                                bool new_x, int m, int nele_jac,
                                                int* iRow, int* jCol,
@@ -201,6 +222,7 @@ bool FemPosDeviationIpoptInterface::eval_jac_g(int n, const double* x,
     }
   } else {
     // return the values of the jacobian of the constraints
+    // adolc自动微分
     sparse_jac(tag_g, m, n, 1, x, &nnz_jac_, &rind_g_, &cind_g_, &jacval_,
                options_g_);
     for (int idx = 0; idx < nnz_jac_; idx++) {
@@ -231,9 +253,10 @@ bool FemPosDeviationIpoptInterface::eval_h(int n, const double* x, bool new_x,
       obj_lam_[1 + idx] = lambda[idx];
     }
     set_param_vec(tag_L, m + 1, &obj_lam_[0]);
+    
     sparse_hess(tag_L, n, 1, const_cast<double*>(x), &nnz_L_, &rind_L_,
                 &cind_L_, &hessval_, options_L_);
-
+    // adolc自动微分
     for (int idx = 0; idx < nnz_L_; idx++) {
       values[idx] = hessval_[idx];
     }
@@ -268,6 +291,7 @@ template <class T>
 bool FemPosDeviationIpoptInterface::eval_obj(int n, const T* x, T* obj_value) {
   *obj_value = 0.0;
 
+  // 相对距离代价
   // Distance to refs
   for (size_t i = 0; i < num_of_points_; ++i) {
     size_t index = i * 2;
@@ -278,12 +302,13 @@ bool FemPosDeviationIpoptInterface::eval_obj(int n, const T* x, T* obj_value) {
              (x[index + 1] - ref_points_[i].second));
   }
 
+  // 平滑度代价
   // Fem_pos_deviation
   for (size_t i = 0; i + 2 < num_of_points_; ++i) {
     size_t findex = i * 2;
     size_t mindex = findex + 2;
     size_t lindex = mindex + 2;
-
+    // 此处用的是近似之前的代价形式
     *obj_value += weight_fem_pos_deviation_ *
                   (((x[findex] + x[lindex]) - 2.0 * x[mindex]) *
                        ((x[findex] + x[lindex]) - 2.0 * x[mindex]) +
@@ -291,6 +316,7 @@ bool FemPosDeviationIpoptInterface::eval_obj(int n, const T* x, T* obj_value) {
                        ((x[findex + 1] + x[lindex + 1]) - 2.0 * x[mindex + 1]));
   }
 
+  // 总长度代价
   // Total length
   for (size_t i = 0; i + 1 < num_of_points_; ++i) {
     size_t findex = i * 2;
@@ -301,6 +327,7 @@ bool FemPosDeviationIpoptInterface::eval_obj(int n, const T* x, T* obj_value) {
          (x[findex + 1] - x[nindex + 1]) * (x[findex + 1] - x[nindex + 1]));
   }
 
+  // slack变量 线性代价
   // Slack variable minimization
   for (size_t i = slack_var_start_index_; i < slack_var_end_index_; ++i) {
     *obj_value += weight_curvature_constraint_slack_var_ * x[i];
@@ -313,6 +340,7 @@ bool FemPosDeviationIpoptInterface::eval_obj(int n, const T* x, T* obj_value) {
 template <class T>
 bool FemPosDeviationIpoptInterface::eval_constraints(int n, const T* x, int m,
                                                      T* g) {
+  // box约束
   // a. positional deviation constraints
   for (size_t i = 0; i < num_of_points_; ++i) {
     size_t index = i * 2;
@@ -320,6 +348,7 @@ bool FemPosDeviationIpoptInterface::eval_constraints(int n, const T* x, int m,
     g[index + 1] = x[index + 1];
   }
 
+  // 曲率约束
   // b. curvature constraints
   for (size_t i = 0; i + 2 < num_of_points_; ++i) {
     size_t findex = i * 2;
@@ -333,6 +362,7 @@ bool FemPosDeviationIpoptInterface::eval_constraints(int n, const T* x, int m,
         x[slack_var_start_index_ + i];
   }
 
+  // slack变量约束 [0, +inf]
   // c. slack var constraints
   size_t slack_var_index = 0;
   for (size_t i = slack_constr_start_index_; i < slack_constr_end_index_; ++i) {

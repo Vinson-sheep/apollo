@@ -120,6 +120,7 @@ std::vector<routing::LaneWaypoint> LaneFollowMap::FutureRouteWaypoints() const {
 }
 
 void LaneFollowMap::GetEndLaneWayPoint(
+  // 从命令中提取lane_waypoints
     std::shared_ptr<routing::LaneWaypoint> &end_point) const {
   if (!last_command_.has_lane_follow_command() ||
       !last_command_.lane_follow_command().has_routing_request()) {
@@ -394,7 +395,8 @@ bool LaneFollowMap::PassageToSegments(routing::Passage passage,
   return !segments->empty();
 }
 
-// 获取road对应的passage??
+// 获取road对应的passage
+// 只考虑当前车道和左右车道
 std::vector<int> LaneFollowMap::GetNeighborPassages(
     const routing::RoadSegment &road, int start_passage) const {
   CHECK_GE(start_passage, 0);
@@ -501,12 +503,15 @@ bool LaneFollowMap::GetRouteSegments(
 
   // Raw filter to find all neighboring passages
   // 根据当前车辆所在的passage去获取临近的passage
+  // 这个过程筛选出可以通行的车道
+  // 只考虑当前车道和左右车道
   auto drive_passages = GetNeighborPassages(road, passage_index);
 
   // 在上一步中，找到了当前车辆在规划轨迹中的邻近车道，这一步就对每一个车道做一个是否可驶入的检查，
   // 并作道路段截取，也就是制定出当前车辆在当前情况下可能驶入的区域。每个passage将划分出一个道路区间，
   // 道路区间的长度由前向距离查询（看函数输入）决定，短期内可行驶道路长度为forward_length + 
   // backward_length。
+  
   for (const int index : drive_passages) {
     const auto &passage = road.passage(index);
     hdmap::RouteSegments segments;
