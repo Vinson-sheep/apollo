@@ -40,6 +40,7 @@
 namespace apollo {
 namespace planning {
 
+// st图本体
 class GriddedPathTimeGraph {
  public:
   GriddedPathTimeGraph(const StGraphData& st_graph_data,

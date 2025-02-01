@@ -50,27 +50,39 @@ bool OpenSpacePreStopDecider::Init(
   return res;
 }
 
+// 用于开放空间中执行泊车与靠边停车任务时，生成在公共道路上的停车点，
+// 车辆停在停车点后，会转入开放空间算法。
 Status OpenSpacePreStopDecider::Process(
     Frame* frame, ReferenceLineInfo* reference_line_info) {
   CHECK_NOTNULL(frame);
   CHECK_NOTNULL(reference_line_info);
   double target_s = 0.0;
   const auto& stop_type = config_.stop_type();
+
+  // 遍历停止类型？
   switch (stop_type) {
+
+    // 泊车
     case OpenSpacePreStopDeciderConfig::PARKING:
+      // 计算目标停车位中心点在道路上的纵向投影点
       if (!CheckParkingSpotPreStop(frame, reference_line_info, &target_s)) {
         const std::string msg = "Checking parking spot pre stop fails";
         AERROR << msg;
         return Status(ErrorCode::PLANNING_ERROR, msg);
       }
+      // 该函数根据停车位的纵向投影点，计算并生成停止墙。
       SetParkingSpotStopFence(target_s, frame, reference_line_info);
       break;
+
+    // 靠边停车
     case OpenSpacePreStopDeciderConfig::PULL_OVER:
+      // 函数计算靠边停车目标点在道路上的纵向投影点
       if (!CheckPullOverPreStop(frame, reference_line_info, &target_s)) {
         const std::string msg = "Checking pull over pre stop fails";
         AERROR << msg;
         return Status(ErrorCode::PLANNING_ERROR, msg);
       }
+      // 该函数根据靠边停车点的纵向投影点，计算并生成停止墙。
       SetPullOverStopFence(target_s, frame, reference_line_info);
       break;
     default:
@@ -100,9 +112,14 @@ bool OpenSpacePreStopDecider::CheckPullOverPreStop(
 bool OpenSpacePreStopDecider::CheckParkingSpotPreStop(
     Frame* const frame, ReferenceLineInfo* const reference_line_info,
     double* target_s) {
+  // 提取停车点id
   const auto& target_parking_spot_id =
       frame->open_space_info().target_parking_spot_id();
+
+  // 提取参考线对应的路径
   const auto& nearby_path = reference_line_info->reference_line().map_path();
+
+  // 如果停车id无效，则返回
   if (target_parking_spot_id.empty()) {
     AERROR << "no target parking spot id found when setting pre stop fence";
     return false;
@@ -113,7 +130,11 @@ bool OpenSpacePreStopDecider::CheckParkingSpotPreStop(
   const auto& parking_space_overlaps = nearby_path.parking_space_overlaps();
   ParkingSpaceInfoConstPtr target_parking_spot_ptr;
   const hdmap::HDMap* hdmap = hdmap::HDMapUtil::BaseMapPtr();
+  
+  // 遍历附近路径的所有可停车区域
   for (const auto& parking_overlap : parking_space_overlaps) {
+
+    // 如果找到目标停车区域
     if (parking_overlap.object_id == target_parking_spot_id) {
       // TODO(Jinyun) parking overlap s are wrong on map, not usable
       // target_area_center_s =
@@ -131,6 +152,8 @@ bool OpenSpacePreStopDecider::CheckParkingSpotPreStop(
                             right_up_point + left_up_point) /
                            4.0;
       double center_l;
+
+      // 计算停车点在参考线中的sl坐标
       nearby_path.GetNearestPoint(center_point, &target_area_center_s,
                                   &center_l);
       target_area_found = true;
@@ -141,6 +164,7 @@ bool OpenSpacePreStopDecider::CheckParkingSpotPreStop(
     AERROR << "no target parking spot found on reference line";
     return false;
   }
+  // 返回成功
   *target_s = target_area_center_s;
   return true;
 }
@@ -148,6 +172,8 @@ bool OpenSpacePreStopDecider::CheckParkingSpotPreStop(
 void OpenSpacePreStopDecider::SetParkingSpotStopFence(
     const double target_s, Frame* const frame,
     ReferenceLineInfo* const reference_line_info) {
+
+  // 计算目标停止点的sl坐标
   const auto& nearby_path = reference_line_info->reference_line().map_path();
   const double adc_front_edge_s = reference_line_info->AdcSlBoundary().end_s();
   const double front_edge_to_center = common::VehicleConfigHelper::Instance()
@@ -165,6 +191,8 @@ void OpenSpacePreStopDecider::SetParkingSpotStopFence(
       target_s + front_edge_to_center + config_.stop_buffer_to_target();
   const std::string stop_wall_id = OPEN_SPACE_STOP_ID;
   std::vector<std::string> wait_for_obstacles;
+
+  // 往目标位置插入停止障碍物
   frame->mutable_open_space_info()->set_open_space_pre_stop_fence_s(
       stop_line_s);
   util::BuildStopDecision(stop_wall_id, stop_line_s, 0.0,

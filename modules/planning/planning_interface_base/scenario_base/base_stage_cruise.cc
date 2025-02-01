@@ -34,8 +34,11 @@ namespace planning {
 bool BaseStageCruise::CheckDone(const Frame& frame,
                                 const PlanningContext* context,
                                 const bool right_of_way_status) {
+
+  // 提取第一条参考线
   const auto& reference_line_info = frame.reference_line_info().front();
 
+  // 
   const auto& junction_overlaps =
       reference_line_info.reference_line().map_path().junction_overlaps();
   if (junction_overlaps.empty()) {

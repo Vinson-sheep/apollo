@@ -33,6 +33,7 @@ namespace planning {
 
 class PlanningContext;
 
+// 巡航专用
 class BaseStageCruise : public Stage {
  public:
   bool CheckDone(const Frame& frame, const PlanningContext* context,

@@ -54,17 +54,24 @@ bool YieldSignScenario::Init(std::shared_ptr<DependencyInjector> injector,
   return true;
 }
 
+// 在有让行标记的场景减速观望，然后慢速通过
 bool YieldSignScenario::IsTransferable(const Scenario* other_scenario,
                                        const Frame& frame) {
+
+  // 判断视野内是否有让行标记
   if (!frame.local_view().planning_command->has_lane_follow_command()) {
     return false;
   }
+
+  // 如果不是从别的场景切换过来，或者根本没有参考线，跳过
   if (other_scenario == nullptr || frame.reference_line_info().empty()) {
     return false;
   }
   const auto& reference_line_info = frame.reference_line_info().front();
   const auto& first_encountered_overlaps =
       reference_line_info.FirstEncounteredOverlaps();
+
+  // 遍历所有标识，如果有让行标识，进入下一步
   hdmap::PathOverlap* yield_sign_overlap = nullptr;
   for (const auto& overlap : first_encountered_overlaps) {
     if (overlap.first == ReferenceLineInfo::SIGNAL ||
@@ -78,6 +85,8 @@ bool YieldSignScenario::IsTransferable(const Scenario* other_scenario,
   if (yield_sign_overlap == nullptr) {
     return false;
   }
+
+  // 如果让行标记在给定范围内，进入下一步
   const double adc_front_edge_s = reference_line_info.AdcSlBoundary().end_s();
   const double adc_distance_to_yield_sign =
       yield_sign_overlap->start_s - adc_front_edge_s;
@@ -85,10 +94,12 @@ bool YieldSignScenario::IsTransferable(const Scenario* other_scenario,
       (adc_distance_to_yield_sign > 0.0 &&
        adc_distance_to_yield_sign <=
            context_.scenario_config.start_yield_sign_scenario_distance());
+
   return yield_sign_scenario;
 }
 
 bool YieldSignScenario::Exit(Frame* frame) {
+  // 仅清除injector_中的数据
   injector_->planning_context()
       ->mutable_planning_status()
       ->mutable_yield_sign()
@@ -97,6 +108,8 @@ bool YieldSignScenario::Exit(Frame* frame) {
 }
 
 bool YieldSignScenario::Enter(Frame* frame) {
+
+  // 提取第一个识别到的让行标识
   // get first_encountered yield_sign
   const auto& reference_line_info = frame->reference_line_info().front();
   std::string current_yield_sign_overlap_id;
@@ -108,6 +121,7 @@ bool YieldSignScenario::Enter(Frame* frame) {
     }
   }
 
+  // 如果找不到让行标识，返回失败
   if (current_yield_sign_overlap_id.empty()) {
     injector_->planning_context()
         ->mutable_planning_status()
@@ -117,6 +131,8 @@ bool YieldSignScenario::Enter(Frame* frame) {
     return false;
   }
 
+  // 这里又做了一次校验
+  // 如果让行标记确实在所有让行标记内，证明目标标记合法
   // find all the yield_sign at/within the same location/group
   const std::vector<hdmap::PathOverlap>& yield_sign_overlaps =
       reference_line_info.reference_line().map_path().yield_sign_overlaps();
@@ -135,14 +151,16 @@ bool YieldSignScenario::Enter(Frame* frame) {
     return false;
   }
 
+  // 提取阈值内所有让行标识
   static constexpr double kTrafficLightGroupingMaxDist = 2.0;  // unit: m
   const double current_yield_sign_overlap_start_s =
       yield_sign_overlap_itr->start_s;
-  context_.current_yield_sign_overlap_ids.clear();
+  context_.current_yield_sign_overlap_ids.clear(); // 保存在scenario上下文中
   for (const auto& yield_sign_overlap : yield_sign_overlaps) {
     const double dist =
         yield_sign_overlap.start_s - current_yield_sign_overlap_start_s;
     if (fabs(dist) <= kTrafficLightGroupingMaxDist) {
+      // 为什么要插入到injector_
       injector_->planning_context()
           ->mutable_planning_status()
           ->mutable_yield_sign()

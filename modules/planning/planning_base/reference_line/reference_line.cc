@@ -935,29 +935,43 @@ std::string ReferenceLine::DebugString() const {
 }
 
 double ReferenceLine::GetSpeedLimitFromS(const double s) const {
+
+  // 遍历所有已知的速度限制
   for (const auto& speed_limit : speed_limit_) {
+    // 如果速度限制区域包含s，返回该速度限制
     if (s >= speed_limit.start_s && s <= speed_limit.end_s) {
       return speed_limit.speed_limit;
     }
   }
+
+  // 提取s附近的参考线点
   const auto& map_path_point = GetReferencePoint(s);
 
   double speed_limit = FLAGS_planning_upper_speed_limit;
   bool speed_limit_found = false;
+
+  // 遍历参考线上的点
   for (const auto& lane_waypoint : map_path_point.lane_waypoints()) {
+
+    // 跳过不合理的点
     if (lane_waypoint.lane == nullptr) {
       AWARN << "lane_waypoint.lane is nullptr.";
       continue;
     }
+
+    // 记录速度限制，取最小值
     speed_limit_found = true;
     speed_limit =
         std::fmin(lane_waypoint.lane->lane().speed_limit(), speed_limit);
   }
 
+  // 如果还是没找到速度限制
   if (!speed_limit_found) {
     // use default speed limit based on road_type
+    // 默认为城市公路速度限制
     speed_limit = FLAGS_default_city_road_speed_limit;
     hdmap::Road::Type road_type = GetRoadType(s);
+    // 如果在高速上，使用高速默认速度限制
     if (road_type == hdmap::Road::HIGHWAY) {
       speed_limit = FLAGS_default_highway_speed_limit;
     }

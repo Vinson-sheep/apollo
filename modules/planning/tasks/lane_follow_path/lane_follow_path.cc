@@ -46,6 +46,7 @@ bool LaneFollowPath::Init(const std::string& config_dir,
 
 apollo::common::Status LaneFollowPath::Process(
     Frame* frame, ReferenceLineInfo* reference_line_info) {
+  // 如果之前已经生成路径，或者路径重复使用，则跳过
   if (!reference_line_info->path_data().Empty() ||
       reference_line_info->path_reusable()) {
     ADEBUG << "Skip this time path empty:"
@@ -57,6 +58,7 @@ apollo::common::Status LaneFollowPath::Process(
   std::vector<PathData> candidate_path_data;
 
   GetStartPointSLState();
+  
   if (!DecidePathBounds(&candidate_path_boundaries)) {
     AERROR << "Decide path bound failed";
     return Status::OK();
@@ -80,44 +82,51 @@ bool LaneFollowPath::DecidePathBounds(std::vector<PathBoundary>* boundary) {
   std::string lane_type = "";
   double path_narrowest_width = 0;
   // 1. Initialize the path boundaries to be an indefinitely large area.
+  // 对路径点进行等距采样，然后给定很大的边界默认值
   if (!PathBoundsDeciderUtil::InitPathBoundary(*reference_line_info_,
                                                &path_bound, init_sl_state_)) {
     const std::string msg = "Failed to initialize path boundaries.";
     AERROR << msg;
     return false;
   }
-  std::string borrow_lane_type;
-  bool is_include_adc = config_.is_extend_lane_bounds_to_include_adc() &&
-                        !injector_->planning_context()
-                             ->planning_status()
-                             .path_decider()
-                             .is_in_path_lane_borrow_scenario();
+  // std::string borrow_lane_type;
+
   // 2. Decide a rough boundary based on lane info and ADC's position
+  // 遍历路径边界，基于lane获取左右宽度，并减去车宽
   if (!PathBoundsDeciderUtil::GetBoundaryFromSelfLane(
           *reference_line_info_, init_sl_state_, &path_bound)) {
     AERROR << "Failed to decide a rough boundary based on self lane.";
     return false;
   }
+
+  // 将车身叠加缓冲区，将车道宽度拓展到扩展后的车身
+  // 条件是参考线延伸到车辆，且不在借道场景？
+  bool is_include_adc = config_.is_extend_lane_bounds_to_include_adc() &&
+                      !injector_->planning_context()
+                            ->planning_status()
+                            .path_decider()
+                            .is_in_path_lane_borrow_scenario();
   if (is_include_adc) {
     PathBoundsDeciderUtil::ExtendBoundaryByADC(
         *reference_line_info_, init_sl_state_, config_.extend_buffer(),
         &path_bound);
   }
-  PrintCurves print_curve;
-  auto indexed_obstacles = reference_line_info_->path_decision()->obstacles();
-  for (const auto* obs : indexed_obstacles.Items()) {
-    const auto& sl_bound = obs->PerceptionSLBoundary();
-    for (int i = 0; i < sl_bound.boundary_point_size(); i++) {
-      std::string name = obs->Id() + "_obs_sl_boundary";
-      print_curve.AddPoint(name, sl_bound.boundary_point(i).s(),
-                           sl_bound.boundary_point(i).l());
-    }
-  }
-  print_curve.PrintToLog();
+  // PrintCurves print_curve;
+  // auto indexed_obstacles = reference_line_info_->path_decision()->obstacles();
+  // for (const auto* obs : indexed_obstacles.Items()) {
+  //   const auto& sl_bound = obs->PerceptionSLBoundary();
+  //   for (int i = 0; i < sl_bound.boundary_point_size(); i++) {
+  //     std::string name = obs->Id() + "_obs_sl_boundary";
+  //     print_curve.AddPoint(name, sl_bound.boundary_point(i).s(),
+  //                          sl_bound.boundary_point(i).l());
+  //   }
+  // }
+  // print_curve.PrintToLog();
 
   path_bound.set_label(absl::StrCat("regular/", "self"));
 
   // 3. Fine-tune the boundary based on static obstacles
+  // 针对非虚拟静态障碍物，决策左右绕行，然后更新边界
   PathBound temp_path_bound = path_bound;
   std::vector<SLPolygon> obs_sl_polygons;
   PathBoundsDeciderUtil::GetSLPolygons(*reference_line_info_, &obs_sl_polygons,
@@ -141,13 +150,16 @@ bool LaneFollowPath::DecidePathBounds(std::vector<PathBoundary>* boundary) {
   }
 
   // lane_follow_status update
+  // 如果存在障碍物，那么更新该参考线对应的障碍物信息
   auto* lane_follow_status = injector_->planning_context()
                                  ->mutable_planning_status()
                                  ->mutable_lane_follow();
   if (!blocking_obstacle_id.empty()) {
     double current_time = ::apollo::cyber::Clock::NowInSeconds();
+    // 更新障碍物id
     lane_follow_status->set_block_obstacle_id(blocking_obstacle_id);
     if (lane_follow_status->lane_follow_block()) {
+      // 更新障碍物计时器
       lane_follow_status->set_block_duration(
           lane_follow_status->block_duration() + current_time -
           lane_follow_status->last_block_timestamp());
@@ -178,8 +190,9 @@ bool LaneFollowPath::DecidePathBounds(std::vector<PathBoundary>* boundary) {
   //                                        std::get<2>(path_bound[i]));
   // }
 
+  // 将障碍物id赋值给path_bound
   path_bound.set_blocking_obstacle_id(blocking_obstacle_id);
-  RecordDebugInfo(path_bound, path_bound.label(), reference_line_info_);
+  // RecordDebugInfo(path_bound, path_bound.label(), reference_line_info_);
   return true;
 }
 

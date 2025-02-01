@@ -82,6 +82,8 @@ constexpr double kStraightForwardLineCost = 10.0;
 // 对frame的多条参考线都生成对应轨迹
 StageResult LaneFollowStage::Process(
     const TrajectoryPoint& planning_start_point, Frame* frame) {
+
+  // 如果没有参考线，直接结束stage
   if (frame->reference_line_info().empty()) {
     return StageResult(StageStatusType::FINISHED);
   }

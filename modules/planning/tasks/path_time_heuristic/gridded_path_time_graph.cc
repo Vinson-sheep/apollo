@@ -76,6 +76,8 @@ GriddedPathTimeGraph::GriddedPathTimeGraph(
       dp_st_cost_(dp_config, st_graph_data_.total_time_by_conf(),
                   st_graph_data_.path_length(), obstacles,
                   st_graph_data_.st_drivable_boundary(), init_point_) {
+  //
+
   total_length_t_ = st_graph_data_.total_time_by_conf();
   unit_t_ = gridded_path_time_graph_config_.unit_t();
   total_length_s_ = st_graph_data_.path_length();
@@ -93,21 +95,33 @@ GriddedPathTimeGraph::GriddedPathTimeGraph(
 }
 
 Status GriddedPathTimeGraph::Search(SpeedData* const speed_data) {
+
+
   static constexpr double kBounadryEpsilon = 1e-2;
+
+  // 遍历所有st子图
   for (const auto& boundary : st_graph_data_.st_boundaries()) {
+
+    // 忽略KEEP_CLEAR类型的边界
     // KeepClear obstacles not considered in Dp St decision
     if (boundary->boundary_type() == STBoundary::BoundaryType::KEEP_CLEAR) {
       continue;
     }
+
+    // 如果st图原点在障碍物内，返回默认速度轮廓
     // If init point in collision with obstacle, return speed fallback
     if (boundary->IsPointInBoundary({0.0, 0.0}) ||
         (std::fabs(boundary->min_t()) < kBounadryEpsilon &&
          std::fabs(boundary->min_s()) < kBounadryEpsilon)) {
+
+      // 计算t的离散数目
       dimension_t_ = static_cast<uint32_t>(std::ceil(
                          total_length_t_ / static_cast<double>(unit_t_))) +
                      1;
       std::vector<SpeedPoint> speed_profile;
       double t = 0.0;
+
+      // s不随时间变化的速度轮廓
       for (uint32_t i = 0; i < dimension_t_; ++i, t += unit_t_) {
         speed_profile.push_back(PointFactory::ToSpeedPoint(0, t));
       }
@@ -160,10 +174,14 @@ Status GriddedPathTimeGraph::InitCostTable() {
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
+
+  // 计算t轴的维度
   dimension_t_ = static_cast<uint32_t>(std::ceil(
                      total_length_t_ / static_cast<double>(unit_t_))) +
                  1;
 
+  // 计算s轴由dense_dimension_s_ + sparse_dimension_s_ 组成
+  // 前半部分为dense_dimension_s_,后半部分为sparse_dimension_s_
   double sparse_length_s =
       total_length_s_ -
       static_cast<double>(dense_dimension_s_ - 1) * dense_unit_s_;
@@ -185,19 +203,27 @@ Status GriddedPathTimeGraph::InitCostTable() {
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
+  // 初始化代价表，行为t，列为s
   cost_table_ = std::vector<std::vector<StGraphPoint>>(
       dimension_t_, std::vector<StGraphPoint>(dimension_s_, StGraphPoint()));
 
   double curr_t = 0.0;
+
+  // 遍历t坐标
   for (uint32_t i = 0; i < cost_table_.size(); ++i, curr_t += unit_t_) {
     auto& cost_table_i = cost_table_[i];
     double curr_s = 0.0;
+
+    // 初始化dense_dimension_s_部分的s/t坐标
     for (uint32_t j = 0; j < dense_dimension_s_; ++j, curr_s += dense_unit_s_) {
       cost_table_i[j].Init(i, j, STPoint(curr_s, curr_t));
       debug.AddPoint("dp_node_points", curr_t, curr_s);
     }
+
     curr_s = static_cast<double>(dense_dimension_s_ - 1) * dense_unit_s_ +
              sparse_unit_s_;
+
+    // 初始化sparse_dimension_s_部分的s/t坐标
     for (uint32_t j = dense_dimension_s_; j < cost_table_i.size();
          ++j, curr_s += sparse_unit_s_) {
       cost_table_i[j].Init(i, j, STPoint(curr_s, curr_t));
@@ -205,6 +231,7 @@ Status GriddedPathTimeGraph::InitCostTable() {
     }
   }
 
+  // 按s索引，初始化s距离
   const auto& cost_table_0 = cost_table_[0];
   spatial_distance_by_index_ = std::vector<double>(cost_table_0.size(), 0.0);
   for (uint32_t i = 0; i < cost_table_0.size(); ++i) {
@@ -219,6 +246,7 @@ Status GriddedPathTimeGraph::InitSpeedLimitLookUp() {
   speed_limit_by_index_.resize(dimension_s_);
   const auto& speed_limit = st_graph_data_.speed_limit();
 
+  // 按s索引值，初始化速度限制
   for (uint32_t i = 0; i < dimension_s_; ++i) {
     speed_limit_by_index_[i] =
         speed_limit.GetSpeedLimitByS(cost_table_[0][i].point().s());
@@ -233,21 +261,30 @@ Status GriddedPathTimeGraph::CalculateTotalCost() {
   size_t next_highest_row = 0;
   size_t next_lowest_row = 0;
 
+  // 按时间顺序遍历cost_table_
   for (size_t c = 0; c < cost_table_.size(); ++c) {
+
+
+    // 计算目标区间内s的数目
     size_t highest_row = 0;
     size_t lowest_row = cost_table_.back().size() - 1;
-
     int count = static_cast<int>(next_highest_row) -
                 static_cast<int>(next_lowest_row) + 1;
+
+    // 计算当前层代价
     if (count > 0) {
       std::vector<std::future<void>> results;
+      // 遍历区域内的所有s
       for (size_t r = next_lowest_row; r <= next_highest_row; ++r) {
         auto msg = std::make_shared<StGraphMessage>(c, r);
+        // 使用多线程计算代价
         if (gridded_path_time_graph_config_
                 .enable_multi_thread_in_dp_st_graph()) {
           results.push_back(
               cyber::Async(&GriddedPathTimeGraph::CalculateCostAt, this, msg));
-        } else {
+        } 
+        // 使用单线程计算代价
+        else {
           CalculateCostAt(msg);
         }
       }
@@ -259,6 +296,7 @@ Status GriddedPathTimeGraph::CalculateTotalCost() {
       }
     }
 
+    // 计算下一层s的合法值区间
     for (size_t r = next_lowest_row; r <= next_highest_row; ++r) {
       const auto& cost_cr = cost_table_[c][r];
       if (cost_cr.total_cost() < std::numeric_limits<double>::infinity()) {
@@ -285,12 +323,16 @@ void GriddedPathTimeGraph::GetRowRange(const StGraphPoint& point,
   // information of the current velocity (set to 1 by default since we use
   // past 1 second's average v as approximation)
   double acc_coeff = 0.5;
+  // 如果是第一列，那么速度取初值
   if (!point.pre_point()) {
     v0 = init_point_.v();
-  } else {
+  } 
+  // 否则，速度取父节点最优值
+  else {
     v0 = point.GetOptimalSpeed();
   }
 
+  // 计算下一列最大s的索引值
   const auto max_s_size = dimension_s_ - 1;
   const double t_squared = unit_t_ * unit_t_;
   const double s_upper_bound = v0 * unit_t_ +
@@ -306,6 +348,7 @@ void GriddedPathTimeGraph::GetRowRange(const StGraphPoint& point,
         std::distance(spatial_distance_by_index_.begin(), next_highest_itr);
   }
 
+  // 计算下一列最大s的索引值
   const double s_lower_bound =
       std::fmax(0.0, v0 * unit_t_ + acc_coeff * max_deceleration_ * t_squared) +
       point.point().s();
@@ -326,13 +369,16 @@ void GriddedPathTimeGraph::CalculateCostAt(
   const uint32_t r = msg->r;
   auto& cost_cr = cost_table_[c][r];
 
+  // 计算障碍物代价
   cost_cr.SetObstacleCost(dp_st_cost_.GetObstacleCost(cost_cr));
   if (cost_cr.obstacle_cost() > std::numeric_limits<double>::max()) {
     return;
   }
 
+  // 计算启发式函数代价
   cost_cr.SetSpatialPotentialCost(dp_st_cost_.GetSpatialPotentialCost(cost_cr));
 
+  // 对初始点特殊处理
   const auto& cost_init = cost_table_[0][0];
   if (c == 0) {
     DCHECK_EQ(r, 0U) << "Incorrect. Row should be 0 with col = 0. row: " << r;
@@ -347,18 +393,23 @@ void GriddedPathTimeGraph::CalculateCostAt(
   // default: 0.25 * 7 = 1.75 m
   const double min_s_consider_speed = dense_unit_s_ * dimension_t_;
 
+  // 对第二列进行特殊处理
   if (c == 1) {
+
+    // 如果两倍加速度超过阈值，返回无穷
     const double acc =
         2 * (cost_cr.point().s() / unit_t_ - init_point_.v()) / unit_t_;
     if (acc < max_deceleration_ || acc > max_acceleration_) {
       return;
     }
 
+    // 如果速度为后退，或者不考虑速度，直接跳过
     if (init_point_.v() + acc * unit_t_ < -kDoubleEpsilon &&
         cost_cr.point().s() > min_s_consider_speed) {
       return;
     }
 
+    // 如果与障碍物有交集，返回
     if (CheckOverlapOnDpStGraph(st_graph_data_.st_boundaries(), cost_cr,
                                 cost_init)) {
       return;
@@ -390,6 +441,7 @@ void GriddedPathTimeGraph::CalculateCostAt(
   const auto& pre_col = cost_table_[c - 1];
   double curr_speed_limit = speed_limit;
 
+  // 对第三列进行特殊处理
   if (c == 2) {
     for (uint32_t i = 0; i < r_pre_size; ++i) {
       uint32_t r_pre = r - i;
@@ -442,6 +494,8 @@ void GriddedPathTimeGraph::CalculateCostAt(
     return;
   }
 
+
+  // 对于其他列进行特殊处理
   for (uint32_t i = 0; i < r_pre_size; ++i) {
     uint32_t r_pre = r - i;
     if (std::isinf(pre_col[r_pre].total_cost()) ||

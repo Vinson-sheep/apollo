@@ -63,6 +63,7 @@ bool PiecewiseJerkSpeedNonlinearOptimizer::Init(
   return true;
 }
 
+// 基于非线性规划在凸ST空间的速度规划算法
 Status PiecewiseJerkSpeedNonlinearOptimizer::Process(
     const PathData& path_data, const TrajectoryPoint& init_point,
     SpeedData* const speed_data) {

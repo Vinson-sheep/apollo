@@ -33,6 +33,7 @@ using apollo::hdmap::ParkingSpaceInfoConstPtr;
 using apollo::hdmap::Path;
 using apollo::hdmap::PathOverlap;
 
+// 可以在停车区域泊入指定的车位
 bool ValetParkingScenario::Init(std::shared_ptr<DependencyInjector> injector,
                                 const std::string& name) {
   if (init_) {
@@ -58,6 +59,8 @@ bool ValetParkingScenario::Init(std::shared_ptr<DependencyInjector> injector,
 bool ValetParkingScenario::IsTransferable(const Scenario* const other_scenario,
                                           const Frame& frame) {
   // TODO(all) Implement available parking spot detection by preception results
+
+  // 条件1：planning command里存在泊车命令
   if (!frame.local_view().planning_command->has_parking_command()) {
     return false;
   }
@@ -81,11 +84,13 @@ bool ValetParkingScenario::IsTransferable(const Scenario* const other_scenario,
     return false;
   }
 
+  // 条件2：距离泊车点距离parking_spot_range_to_start以内
   const auto& nearby_path =
       frame.reference_line_info().front().reference_line().map_path();
   PathOverlap parking_space_overlap;
   const auto& vehicle_state = frame.vehicle_state();
 
+  // 判断附近是否真的有目标停车点
   if (!SearchTargetParkingSpotOnPath(nearby_path, target_parking_spot_id,
                                      &parking_space_overlap)) {
     ADEBUG << "No such parking spot found after searching all path forward "
@@ -95,6 +100,8 @@ bool ValetParkingScenario::IsTransferable(const Scenario* const other_scenario,
   }
   double parking_spot_range_to_start =
       context_.scenario_config.parking_spot_range_to_start();
+
+  // 判断停车点是否在目标距离阈值内
   if (!CheckDistanceToParkingSpot(frame, vehicle_state, nearby_path,
                                   parking_spot_range_to_start,
                                   parking_space_overlap)) {
@@ -110,8 +117,10 @@ bool ValetParkingScenario::IsTransferable(const Scenario* const other_scenario,
 bool ValetParkingScenario::SearchTargetParkingSpotOnPath(
     const Path& nearby_path, const std::string& target_parking_id,
     PathOverlap* parking_space_overlap) {
+  // 搜索附近的停车空间
   const auto& parking_space_overlaps = nearby_path.parking_space_overlaps();
   for (const auto& parking_overlap : parking_space_overlaps) {
+    // 如果停车空间包含指令中的id，那么搜索成功
     if (parking_overlap.object_id == target_parking_id) {
       *parking_space_overlap = parking_overlap;
       return true;
@@ -129,6 +138,8 @@ bool ValetParkingScenario::CheckDistanceToParkingSpot(
   hdmap::Id id;
   double center_point_s, center_point_l;
   id.set_id(parking_space_overlap.object_id);
+
+  // 提取停车点的中心点
   ParkingSpaceInfoConstPtr target_parking_spot_ptr =
       hdmap->GetParkingSpaceById(id);
   Vec2d left_bottom_point = target_parking_spot_ptr->polygon().points().at(0);
@@ -138,11 +149,17 @@ bool ValetParkingScenario::CheckDistanceToParkingSpot(
   Vec2d center_point = (left_bottom_point + right_bottom_point +
                         right_top_point + left_top_point) /
                        4.0;
+
+  // 提取停车中心点的sl坐标
   nearby_path.GetNearestPoint(center_point, &center_point_s, &center_point_l);
   double vehicle_point_s = 0.0;
   double vehicle_point_l = 0.0;
+
+  // 提取车辆中心的sl坐标
   Vec2d vehicle_vec(vehicle_state.x(), vehicle_state.y());
   nearby_path.GetNearestPoint(vehicle_vec, &vehicle_point_s, &vehicle_point_l);
+
+  // 如果停车点和车辆距离较近，那么认为可以进入停车场景
   if (std::abs(center_point_s - vehicle_point_s) < parking_start_range) {
     return true;
   }

@@ -27,18 +27,27 @@ StageResult StageParking::Process(
     const common::TrajectoryPoint& planning_init_point, Frame* frame) {
   // Open space planning doesn't use planning_init_point from upstream because
   // of different stitching strategy
+
+  // 检查停车点是否一致
   auto scenario_context = GetContextAs<ValetParkingContext>();
   frame->mutable_open_space_info()->set_is_on_open_space_trajectory(true);
   *(frame->mutable_open_space_info()->mutable_target_parking_spot_id()) =
       scenario_context->target_parking_spot_id;
+
+  // 执行task
   StageResult result = ExecuteTaskOnOpenSpace(frame);
+
+  // 错误处理
   if (result.HasError()) {
     AERROR << "StageParking planning error";
     return result.SetStageStatus(StageStatusType::ERROR);
   }
+
+  // 只返回running?
   return result.SetStageStatus(StageStatusType::RUNNING);
 }
 
+// 这个函数谁来调用？
 StageResult StageParking::FinishStage() {
   return StageResult(StageStatusType::FINISHED);
 }

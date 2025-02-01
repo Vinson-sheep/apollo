@@ -58,21 +58,25 @@ Status PathDecider::Process(const ReferenceLineInfo *reference_line_info,
                             const PathData &path_data,
                             PathDecision *const path_decision) {
   // skip path_decider if reused path
+  // 如果路径重复使用，则跳过
   if (FLAGS_enable_skip_path_tasks && reference_line_info->path_reusable()) {
     return Status::OK();
   }
+  // 获取离散路径点
   PrintCurves debug_info;
   const auto &path = path_data.discretized_path();
-  if (!path.empty()) {
-    const auto &vehicle_box =
-        common::VehicleConfigHelper::Instance()->GetBoundingBox(path[0]);
-    debug_info.AddPoint("start_point_box", vehicle_box.GetAllCorners());
-  }
+  // if (!path.empty()) {
+  //   const auto &vehicle_box =
+  //       common::VehicleConfigHelper::Instance()->GetBoundingBox(path[0]);
+  //   debug_info.AddPoint("start_point_box", vehicle_box.GetAllCorners());
+  // }
 
-  for (const auto &path_pt : path) {
-    debug_info.AddPoint("output_path", path_pt.x(), path_pt.y());
-  }
-  debug_info.PrintToLog();
+  // for (const auto &path_pt : path) {
+  //   debug_info.AddPoint("output_path", path_pt.x(), path_pt.y());
+  // }
+  // debug_info.PrintToLog();
+
+  // 如果有障碍物，那么进行计数？
   std::string blocking_obstacle_id;
   auto *mutable_path_decider_status = injector_->planning_context()
                                           ->mutable_planning_status()
@@ -100,6 +104,8 @@ Status PathDecider::Process(const ReferenceLineInfo *reference_line_info,
       mutable_path_decider_status->set_front_static_obstacle_id(id);
     }
   }
+  // 调用MakeStaticObstacleDecision进行障碍物判决，之后判断是否需要忽略后向障碍物，
+  // 如果配置文件中的后向障碍物忽略参数为是，则忽略后向障碍物。
   if (!MakeObjectDecision(path_data, blocking_obstacle_id, path_decision)) {
     const std::string msg = "Failed to make decision based on tunnel";
     AERROR << msg;
@@ -141,6 +147,7 @@ bool PathDecider::MakeStaticObstacleDecision(
   const double lateral_radius = half_width + FLAGS_lateral_ignore_buffer;
 
   // Go through every obstacle and make decisions.
+  // 遍历所有障碍物
   for (const auto *obstacle : path_decision->obstacles().Items()) {
     const std::string &obstacle_id = obstacle->Id();
     const std::string obstacle_type_name =
@@ -148,22 +155,27 @@ bool PathDecider::MakeStaticObstacleDecision(
     ADEBUG << "obstacle_id[<< " << obstacle_id << "] type["
            << obstacle_type_name << "]";
 
+    // 对于非静态和虚拟障碍物，该方法直接跳过；
     if (!obstacle->IsStatic() || obstacle->IsVirtual()) {
       continue;
     }
     // - skip decision making for obstacles with IGNORE/STOP decisions already.
+    // 对于经过纵向判决并且决策结果为ingnore，以及经过横向判决且横向决策结果为ignore的障碍物，该方法也直接跳过；
     if (obstacle->HasLongitudinalDecision() &&
         obstacle->LongitudinalDecision().has_ignore() &&
         obstacle->HasLateralDecision() &&
         obstacle->LateralDecision().has_ignore()) {
       continue;
     }
+    // 对于判决结果为stop的障碍物，该方法直接跳过；
     if (obstacle->HasLongitudinalDecision() &&
         obstacle->LongitudinalDecision().has_stop()) {
       // STOP decision
       continue;
     }
+
     // - add STOP decision for blocking obstacles.
+    // 对于id为 blocking_obstacle_id的障碍物，该方法为障碍物增加stop的判决;
     if (obstacle->Id() == blocking_obstacle_id &&
         !injector_->planning_context()
              ->planning_status()
@@ -177,13 +189,17 @@ bool PathDecider::MakeStaticObstacleDecision(
                                              obstacle->Id(), object_decision);
       continue;
     }
+
     // - skip decision making for clear-zone obstacles.
+    // 对于boundary_type 为 KEEP_CLEAR 的障碍物，该方法直接跳过；
     if (obstacle->reference_line_st_boundary().boundary_type() ==
         STBoundary::BoundaryType::KEEP_CLEAR) {
       continue;
     }
 
     // 0. IGNORE by default and if obstacle is not in path s at all.
+    // 对于障碍物end_s 小于 frenet路径的front_s，或者 障碍物的start_s小于frenet路径的back_s，
+    // 该方法增加not-in-s判决
     ObjectDecisionType object_decision;
     object_decision.mutable_ignore();
     const auto &sl_boundary = obstacle->PerceptionSLBoundary();
@@ -200,12 +216,15 @@ bool PathDecider::MakeStaticObstacleDecision(
     const double curr_l = frenet_point.l();
     double min_nudge_l = half_width + config_.static_obstacle_buffer() / 2.0;
 
+    // 对于横向距离过远的障碍物，该方法ignore，加入not-in-l判决
     if (curr_l - lateral_radius > sl_boundary.end_l() ||
         curr_l + lateral_radius < sl_boundary.start_l()) {
       // 1. IGNORE if laterally too far away.
       path_decision->AddLateralDecision("PathDecider/not-in-l", obstacle->Id(),
                                         object_decision);
-    } else if (sl_boundary.end_l() >= curr_l - min_nudge_l &&
+    } 
+    // 对于横向距离过近，无法 nudge,根据情况加入stop判决
+    else if (sl_boundary.end_l() >= curr_l - min_nudge_l &&
                sl_boundary.start_l() <= curr_l + min_nudge_l) {
       if (config_.skip_overlap_stop_check()) {
         AINFO << "skip_overlap_stop_check";
@@ -230,7 +249,9 @@ bool PathDecider::MakeStaticObstacleDecision(
               << sl_boundary.end_l() << "curr_l" << curr_l << "min_nudge_l"
               << min_nudge_l;
       }
-    } else {
+    } 
+    // 其他情况分别加入向左/向右判决
+    else {
       // 3. NUDGE if laterally very close.
       if (sl_boundary.end_l() < curr_l - min_nudge_l) {  // &&
         // sl_boundary.end_l() > curr_l - min_nudge_l - 0.3) {
@@ -257,6 +278,8 @@ bool PathDecider::MakeStaticObstacleDecision(
 
 ObjectStop PathDecider::GenerateObjectStopDecision(
     const Obstacle &obstacle) const {
+
+  // 依据障碍物位置和缓冲区，生成停止位置
   ObjectStop object_stop;
 
   double stop_distance = obstacle.MinRadiusStopDistance(
@@ -276,10 +299,16 @@ ObjectStop PathDecider::GenerateObjectStopDecision(
 
 bool PathDecider::IgnoreBackwardObstacle(PathDecision *const path_decision) {
   double adc_start_s = reference_line_info_->AdcSlBoundary().start_s();
+
+  // 遍历所有障碍物
   for (const auto *obstacle : path_decision->obstacles().Items()) {
+
+    // 忽略静态障碍物和虚拟障碍物
     if (obstacle->IsStatic() || obstacle->IsVirtual()) {
       continue;
     }
+
+    // 忽略处于后方的障碍物
     if (obstacle->Obstacle::PerceptionSLBoundary().end_s() < adc_start_s) {
       ObjectDecisionType object_decision;
       object_decision.mutable_ignore();

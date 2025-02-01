@@ -49,6 +49,8 @@ bool PullOverPath::Init(const std::string& config_dir, const std::string& name,
 
 apollo::common::Status PullOverPath::Process(
     Frame* frame, ReferenceLineInfo* reference_line_info) {
+
+  // 如果已经有成功生成的路径，或者参考线是换道的参考线，则跳过任务
   if (!reference_line_info->path_data().Empty() ||
       reference_line_info->IsChangeLanePath()) {
     return Status::OK();
@@ -56,6 +58,7 @@ apollo::common::Status PullOverPath::Process(
   std::vector<PathBoundary> candidate_path_boundaries;
   std::vector<PathData> candidate_path_data;
 
+  // 计算路径规划的SL起始点状态
   GetStartPointSLState();
 
   if (!DecidePathBounds(&candidate_path_boundaries)) {
@@ -73,6 +76,8 @@ apollo::common::Status PullOverPath::Process(
 }
 
 bool PullOverPath::DecidePathBounds(std::vector<PathBoundary>* boundary) {
+
+  // 如果当前不处于靠边停车状态，返回false
   auto* pull_over_status = injector_->planning_context()
                                ->mutable_planning_status()
                                ->mutable_pull_over();
@@ -80,29 +85,40 @@ bool PullOverPath::DecidePathBounds(std::vector<PathBoundary>* boundary) {
   if (!plan_pull_over_path) {
     return false;
   }
+
+  // 
   boundary->emplace_back();
   auto& path_bound = boundary->back();
   double path_narrowest_width = 0;
+
+  // 对路径点进行等距采样，然后给定很大的边界默认值
   // 1. Initialize the path boundaries to be an indefinitely large area.
   if (!PathBoundsDeciderUtil::InitPathBoundary(*reference_line_info_,
                                                &path_bound, init_sl_state_)) {
     AERROR << "Failed to initialize path boundaries.";
     return false;
   }
+
+  // 基于左右车道宽，调整边界，同时减去车宽
   if (!GetBoundaryFromRoads(*reference_line_info_, &path_bound)) {
     AERROR << "Failed to decide a rough boundary based on road boundary.";
     return false;
   }
-  RecordDebugInfo(path_bound, "pull_over_road", reference_line_info_);
+
+  // 将左右车道宽修正到道路中心
+  // RecordDebugInfo(path_bound, "pull_over_road", reference_line_info_);
   PathBoundsDeciderUtil::ConvertBoundarySAxisFromLaneCenterToRefLine(
       *reference_line_info_, &path_bound);
 
+  // 如果自车横向坐标不在范围内，说明出现问题
   if (init_sl_state_.second[0] < path_bound.front().l_lower.l ||
       init_sl_state_.second[0] > path_bound.front().l_upper.l) {
     AERROR << "ADC is outside road boundary already. Cannot generate pull-over "
               "path";
     return false;
   }
+
+  // 判断是否是右侧靠边停车
   bool is_pull_over_right = true;
   if (config_.pull_over_direction() == PullOverPathConfig::BOTH_SIDE) {
     double adc_to_left_bound =
@@ -115,10 +131,13 @@ bool PullOverPath::DecidePathBounds(std::vector<PathBoundary>* boundary) {
   } else {
     is_pull_over_right = true;
   }
-  // 2. Update boundary by lane boundary for pull_over
-  UpdatePullOverBoundaryByLaneBoundary(is_pull_over_right, &path_bound);
-  RecordDebugInfo(path_bound, "pull_over_lane", reference_line_info_);
 
+  // 2. Update boundary by lane boundary for pull_over
+  // 根据靠边方向收缩边界
+  UpdatePullOverBoundaryByLaneBoundary(is_pull_over_right, &path_bound);
+  // RecordDebugInfo(path_bound, "pull_over_lane", reference_line_info_);
+
+  // 针对非虚拟静态障碍物，决策左右绕行，然后更新边界
   std::string blocking_obstacle_id = "";
   PathBound temp_path_bound = path_bound;
   std::vector<SLPolygon> obs_sl_polygons;
@@ -131,6 +150,8 @@ bool PullOverPath::DecidePathBounds(std::vector<PathBoundary>* boundary) {
               "taking into consideration all static obstacles.";
     return false;
   }
+
+  // 如果已经有停车点，检查点是否在边界内
   // If already found a pull-over position, simply check if it's valid.
   int curr_idx = -1;
   if (pull_over_status->has_position()) {
@@ -138,15 +159,20 @@ bool PullOverPath::DecidePathBounds(std::vector<PathBoundary>* boundary) {
         *reference_line_info_, pull_over_status->position().x(),
         pull_over_status->position().y(), path_bound);
   }
+
+  // 如果没有停车点，搜索一个停车点
   // If haven't found a pull-over position, search for one.
   if (curr_idx < 0) {
     pull_over_status->Clear();
     pull_over_status->set_plan_pull_over_path(true);
+
+    // 搜索停车点
     std::tuple<double, double, double, int> pull_over_configuration;
     if (!SearchPullOverPosition(path_bound, &pull_over_configuration)) {
       AERROR << "Failed to find a proper pull-over position.";
       return false;
     }
+
     const auto& vehicle_param =
         VehicleConfigHelper::GetConfig().vehicle_param();
     curr_idx = std::get<3>(pull_over_configuration);
@@ -166,11 +192,15 @@ bool PullOverPath::DecidePathBounds(std::vector<PathBoundary>* boundary) {
           << "] y[" << pull_over_status->position().y() << "] theta["
           << pull_over_status->theta() << "]";
   }
+
+  // 裁剪boundary，保留一些冗余点
   // Trim path-bound properly
   while (static_cast<int>(path_bound.size()) - 1 >
          curr_idx + FLAGS_num_extra_tail_bound_point) {
     path_bound.pop_back();
   }
+
+  // curr_idx之后的l边界取一样的
   for (size_t idx = curr_idx + 1; idx < path_bound.size(); ++idx) {
     path_bound[idx].l_lower.l = path_bound[curr_idx].l_lower.l;
     path_bound[idx].l_upper.l = path_bound[curr_idx].l_upper.l;
@@ -283,13 +313,21 @@ bool PullOverPath::GetBoundaryFromRoads(
   // Sanity checks.
   CHECK_NOTNULL(path_bound);
   ACHECK(!path_bound->empty());
+
+  // 提取当前参考线
   const ReferenceLine& reference_line = reference_line_info.reference_line();
+
+  // 提取自车车道宽
   double adc_lane_width = PathBoundsDeciderUtil::GetADCLaneWidth(
       reference_line, init_sl_state_.first[0]);
+
+
   // Go through every point, update the boudnary based on the road boundary.
   double past_road_left_width = adc_lane_width / 2.0;
   double past_road_right_width = adc_lane_width / 2.0;
   int path_blocked_idx = -1;
+
+  // 遍历所有边界，获取左右车道宽，并减去车宽
   for (size_t i = 0; i < path_bound->size(); ++i) {
     // 1. Get road boundary.
     double curr_s = (*path_bound)[i].s;
@@ -317,6 +355,7 @@ bool PullOverPath::GetBoundaryFromRoads(
            << refline_offset_to_lane_center;
 
     // 2. Update into path_bound.
+    // 减去车宽
     if (!PathBoundsDeciderUtil::UpdatePathBoundaryWithBuffer(
             curr_left_bound, curr_right_bound, BoundType::ROAD, BoundType::ROAD,
             "", "", &path_bound->at(i))) {
@@ -327,14 +366,20 @@ bool PullOverPath::GetBoundaryFromRoads(
     }
   }
 
+  // 删除path_blocked_idx之后的边界
   PathBoundsDeciderUtil::TrimPathBounds(path_blocked_idx, path_bound);
+
   return true;
 }
 
 void PullOverPath::UpdatePullOverBoundaryByLaneBoundary(
     bool is_pull_over_right, PathBoundary* const path_bound) {
   const ReferenceLine& reference_line = reference_line_info_->reference_line();
+
+  // 遍历所有边界
   for (size_t i = 0; i < path_bound->size(); ++i) {
+
+    // 计算收缩后的边界
     const double curr_s = (*path_bound)[i].s;
     double left_bound = 3.0;
     double right_bound = 3.0;
@@ -349,14 +394,19 @@ void PullOverPath::UpdatePullOverBoundaryByLaneBoundary(
     }
     ADEBUG << "left_bound[" << left_bound << "] right_bound[" << right_bound
            << "]";
+    
+    // 如果是靠右停车，那么收缩左边界
     if (is_pull_over_right) {
       (*path_bound)[i].l_upper.l = left_bound;
-    } else {
+    } 
+    // 如果是靠左停车，那么收缩右边界
+    else {
       (*path_bound)[i].l_lower.l = right_bound;
     }
   }
 }
 
+// 搜索靠边停车点
 bool PullOverPath::SearchPullOverPosition(
     const PathBound& path_bound,
     std::tuple<double, double, double, int>* const pull_over_configuration) {
@@ -364,13 +414,16 @@ bool PullOverPath::SearchPullOverPosition(
   bool search_backward = false;  // search FORWARD by default
 
   double pull_over_s = 0.0;
+  // 估算最近的停车点（急刹车）
   if (config_.pull_over_position() == PullOverPathConfig::NEAREST_POSITION) {
     if (!FindNearestPullOverS(&pull_over_s)) {
       AERROR << "Failed to find emergency_pull_over s";
       return false;
     }
     search_backward = false;  // search FORWARD from target position
-  } else if (config_.pull_over_position() == PullOverPathConfig::DESTINATION) {
+  } 
+  // 将给定的目标点转换为sl坐标系然后输出
+  else if (config_.pull_over_position() == PullOverPathConfig::DESTINATION) {
     if (!FindDestinationPullOverS(path_bound, &pull_over_s)) {
       AERROR << "Failed to find pull_over s upon destination arrival";
       return false;
@@ -380,6 +433,7 @@ bool PullOverPath::SearchPullOverPosition(
     return false;
   }
 
+  // 停止点所在的path索引
   int idx = 0;
   if (search_backward) {
     // 1. Locate the first point before destination.
@@ -398,6 +452,8 @@ bool PullOverPath::SearchPullOverPosition(
     AERROR << "Failed to find path_bound index for pull over s";
     return false;
   }
+
+  // 读取参数
   constexpr double kPulloverLonSearchCoeff = 1.5;
   constexpr double kPulloverLatSearchCoeff = 1.25;
   // Search for a feasible location for pull-over.
@@ -442,6 +498,7 @@ bool PullOverPath::SearchPullOverPosition(
       continue;
     }
 
+    // ？？
     while ((search_backward && j >= 0 &&
             path_bound[idx].s - path_bound[j].s < pull_over_space_length) ||
            (!search_backward && j < static_cast<int>(path_bound.size()) &&
@@ -476,11 +533,17 @@ bool PullOverPath::SearchPullOverPosition(
     if (j < 0) {
       return false;
     }
+
+    // 如果真的有解
     if (is_feasible_window) {
       has_a_feasible_window = true;
+
+      // 提取参考线
       const auto& reference_line = reference_line_info_->reference_line();
       // estimate pull over point to have the vehicle keep same safety
       // distance to front and back
+
+      // 提取参数
       const auto& vehicle_param =
           VehicleConfigHelper::GetConfig().vehicle_param();
       const double back_clear_to_total_length_ratio =
@@ -488,17 +551,21 @@ bool PullOverPath::SearchPullOverPosition(
            vehicle_param.back_edge_to_center()) /
           vehicle_param.length() / kPulloverLonSearchCoeff;
 
+      // 
       int start_idx = j;
       int end_idx = idx;
       if (!search_backward) {
         start_idx = idx;
         end_idx = j;
       }
+
+      // 估算实际停车的s索引
       auto pull_over_idx = static_cast<size_t>(
           back_clear_to_total_length_ratio * static_cast<double>(end_idx) +
           (1.0 - back_clear_to_total_length_ratio) *
               static_cast<double>(start_idx));
 
+      // 获取停车点，s直接使用，l取边界中心
       const auto& pull_over_point = path_bound[pull_over_idx];
       const double pull_over_s = pull_over_point.s;
       const double pull_over_l =
@@ -507,6 +574,7 @@ bool PullOverPath::SearchPullOverPosition(
       pull_over_sl_point.set_s(pull_over_s);
       pull_over_sl_point.set_l(pull_over_l);
 
+      // 将sl停止点转换为xy坐标
       common::math::Vec2d pull_over_xy_point;
       reference_line.SLToXY(pull_over_sl_point, &pull_over_xy_point);
       const double pull_over_x = pull_over_xy_point.x();
@@ -515,6 +583,8 @@ bool PullOverPath::SearchPullOverPosition(
       // set the pull over theta to be the nearest lane theta rather than
       // reference line theta in case of reference line theta not aligned with
       // the lane
+
+      // 获取停止点朝向
       const auto& reference_point =
           reference_line.GetReferencePoint(pull_over_s);
       double pull_over_theta = reference_point.heading();
@@ -527,6 +597,8 @@ bool PullOverPath::SearchPullOverPosition(
               point, 5.0, pull_over_theta, M_PI_2, &lane, &s, &l) == 0) {
         pull_over_theta = lane->Heading(s);
       }
+
+      // 输出结果
       *pull_over_configuration =
           std::make_tuple(pull_over_x, pull_over_y, pull_over_theta,
                           static_cast<int>(pull_over_idx));
@@ -539,6 +611,8 @@ bool PullOverPath::SearchPullOverPosition(
   return has_a_feasible_window;
 }
 
+// 估算最近的停车点
+// 逻辑简单粗暴，连时间也不考虑
 bool PullOverPath::FindNearestPullOverS(double* pull_over_s) {
   const double adc_end_s = reference_line_info_->AdcSlBoundary().end_s();
   const double min_turn_radius = common::VehicleConfigHelper::Instance()
@@ -547,11 +621,13 @@ bool PullOverPath::FindNearestPullOverS(double* pull_over_s) {
                                      .min_turn_radius();
   const double adjust_factor =
       config_.pull_over_approach_lon_distance_adjust_factor();
+  // distance = R * 2 * alpha
   const double pull_over_distance = min_turn_radius * 2 * adjust_factor;
   *pull_over_s = adc_end_s + pull_over_distance;
   return true;
 }
 
+// 将给定的目标点转换为sl坐标系然后输出
 bool PullOverPath::FindDestinationPullOverS(const PathBound& path_bound,
                                             double* pull_over_s) {
   // destination_s based on routing_end

@@ -135,12 +135,19 @@ bool PathGeneration::GetSLBoundary(const PathData& path_data, int point_index,
                                    const ReferenceLineInfo* reference_line_info,
                                    SLBoundary* const sl_boundary) {
   CHECK_NOTNULL(sl_boundary);
+
+  // 提取离散路径
   const auto& discrete_path = path_data.discretized_path();
+
+  // 校验index是否在合理区间
   if (point_index < 0 ||
       static_cast<size_t>(point_index) > discrete_path.size()) {
     return false;
   }
+
   sl_boundary->mutable_boundary_point()->Clear();
+
+  // 提取一些参数
   // Get vehicle config parameters.
   const auto& vehicle_config =
       common::VehicleConfigHelper::Instance()->GetConfig();
@@ -164,6 +171,8 @@ bool PathGeneration::GetSLBoundary(const PathData& path_data, int point_index,
   double warm_start_s = path_data.frenet_frame_path()[point_index].s() +
                         ego_center_shift_distance;
   // Get the SL boundary of vehicle.
+
+  // 调用reference_line函数生成sl_boundary
   reference_line_info->reference_line().GetSLBoundary(ego_box, sl_boundary,
                                                       warm_start_s);
   return true;

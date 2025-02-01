@@ -43,6 +43,7 @@ bool YieldSignStageCreep::Init(
     const std::shared_ptr<DependencyInjector>& injector,
     const std::string& config_dir, void* context) {
   CHECK_NOTNULL(context);
+  // 这里还特意做了校验，其他stage为什么不做校验
   bool ret = Stage::Init(config, injector, config_dir, context);
   if (!ret) {
     AERROR << Name() << "init failed!";
@@ -59,17 +60,22 @@ StageResult YieldSignStageCreep::Process(
   auto scenario_context = GetContextAs<YieldSignContext>();
   scenario_config_.CopyFrom(scenario_context->scenario_config);
 
+  // 如果配置要求跳过stage，直接结束stage
   if (!pipeline_config_.enabled()) {
     return FinishStage();
   }
 
   // Run creep decider.
+  // 遍历所有参考线
   for (auto& reference_line_info : *frame->mutable_reference_line_info()) {
+
+    // 跳过不可行的参考线
     if (!reference_line_info.IsDrivable()) {
       AERROR << "The generated path is not drivable";
       break;
     }
 
+    // ？？？
     const auto ret = ProcessCreep(frame, &reference_line_info);
     if (!ret.ok()) {
       AERROR << "Failed to run CreepDecider ], Error message: "
@@ -78,19 +84,23 @@ StageResult YieldSignStageCreep::Process(
     }
   }
 
+  // 执行task
   StageResult result = ExecuteTaskOnReferenceLine(planning_init_point, frame);
   if (result.HasError()) {
     AERROR << "YieldSignStageCreep planning error";
   }
 
+  // 如果没有让行标记，直接结束scenario
   if (scenario_context->current_yield_sign_overlap_ids.empty()) {
     return FinishScenario();
   }
 
+  // 提取让行overlap的id
   const auto& reference_line_info = frame->reference_line_info().front();
   const std::string yield_sign_overlap_id =
       scenario_context->current_yield_sign_overlap_ids[0];
 
+  // 提取让行overlap
   // get overlap along reference line
   PathOverlap* current_yield_sign_overlap =
       reference_line_info.GetOverlapOnReferenceLine(
@@ -130,9 +140,12 @@ const CreepStageConfig& YieldSignStageCreep::GetCreepStageConfig() const {
   return GetContextAs<YieldSignContext>()->scenario_config.creep_stage_config();
 }
 
+// 提取让行overlap的s和id
 bool YieldSignStageCreep::GetOverlapStopInfo(
     Frame* frame, ReferenceLineInfo* reference_line_info, double* overlap_end_s,
     std::string* overlap_id) const {
+
+  // 提取第一个让行标记
   std::string yield_sign_overlap_id;
   if (injector_->planning_context()
           ->planning_status()
@@ -144,11 +157,16 @@ bool YieldSignStageCreep::GetOverlapStopInfo(
                                 .current_yield_sign_overlap_id(0);
   }
 
+  // 如果存在让行标记
   if (!yield_sign_overlap_id.empty()) {
     // get overlap along reference line
+
+    // 提取让行标记所在的overlap
     PathOverlap* current_yield_sign_overlap =
         reference_line_info->GetOverlapOnReferenceLine(
             yield_sign_overlap_id, ReferenceLineInfo::YIELD_SIGN);
+
+    // 保存让行overlap的s和id
     if (current_yield_sign_overlap) {
       *overlap_end_s = current_yield_sign_overlap->end_s;
       *overlap_id = yield_sign_overlap_id;

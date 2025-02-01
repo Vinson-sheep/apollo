@@ -87,6 +87,7 @@ int BuildStopDecision(const std::string& stop_wall_id, const double stop_line_s,
   return 0;
 }
 
+// 在目标位置插入一个虚拟的停止障碍物
 int BuildStopDecision(const std::string& stop_wall_id,
                       const std::string& lane_id, const double lane_s,
                       const double stop_distance,

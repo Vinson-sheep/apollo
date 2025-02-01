@@ -42,6 +42,7 @@ bool FallbackPath::Init(const std::string& config_dir, const std::string& name,
 
 apollo::common::Status FallbackPath::Process(
     Frame* frame, ReferenceLineInfo* reference_line_info) {
+  // 如果前面已经生成路径，或者要求变道，跳过
   if (!reference_line_info->path_data().Empty() ||
       reference_line_info->IsChangeLanePath()) {
     return Status::OK();
@@ -65,6 +66,7 @@ apollo::common::Status FallbackPath::Process(
 }
 
 bool FallbackPath::DecidePathBounds(std::vector<PathBoundary>* boundary) {
+  // 与follow_lane_path相比，不考虑静态障碍物
   boundary->emplace_back();
   auto& path_bound = boundary->back();
   // 1. Initialize the path boundaries to be an indefinitely large area.

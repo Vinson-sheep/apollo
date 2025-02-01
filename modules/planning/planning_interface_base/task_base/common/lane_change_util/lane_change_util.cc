@@ -120,50 +120,67 @@ bool IsClearToChangeLane(ReferenceLineInfo* reference_line_info) {
   return true;
 }
 
+// search_beam_length: 20.0 //is the length of scanning beam
+// search_beam_radius_intensity: 0.08 //is the resolution of scanning
+// search_range: 3.14 	//is the scanning range centering at ADV heading
+// is_block_angle_threshold: 0.5 //is the threshold to tell how big a block angle range is perception blocking
+
 bool IsPerceptionBlocked(const ReferenceLineInfo& reference_line_info,
                          const double search_beam_length,
                          const double search_beam_radius_intensity,
                          const double search_range,
                          const double is_block_angle_threshold) {
+  // 获取车辆状态、位置、航向角
   const auto& vehicle_state = reference_line_info.vehicle_state();
   const common::math::Vec2d adv_pos(vehicle_state.x(), vehicle_state.y());
   const double adv_heading = vehicle_state.heading();
 
+  // 遍历障碍物
   for (auto* obstacle :
        reference_line_info.path_decision().obstacles().Items()) {
+    // NormalizeAngle将给定的角度值规范化到一个特定的范围内（-π到π之间）
+    // 计算左右最大FOV
     double left_most_angle =
         common::math::NormalizeAngle(adv_heading + 0.5 * search_range);
     double right_most_angle =
         common::math::NormalizeAngle(adv_heading - 0.5 * search_range);
     bool right_most_found = false;
+
+    // 跳过虚拟障碍物
     if (obstacle->IsVirtual()) {
       ADEBUG << "skip one virtual obstacle";
       continue;
     }
+    // 获取障碍物多边形
     const auto& obstacle_polygon = obstacle->PerceptionPolygon();
+    // 按角度进行搜索
     for (double search_angle = 0.0; search_angle < search_range;
          search_angle += search_beam_radius_intensity) {
       common::math::Vec2d search_beam_end(search_beam_length, 0.0);
       const double beam_heading = common::math::NormalizeAngle(
           adv_heading - 0.5 * search_range + search_angle);
+      // search_beam_end绕adv_pos旋转beam_heading角度
       search_beam_end.SelfRotate(beam_heading);
       search_beam_end += adv_pos;
+      // 构造线段
       common::math::LineSegment2d search_beam(adv_pos, search_beam_end);
-
+      // 判断最右边界是否找到，并更新右边界角度
       if (!right_most_found && obstacle_polygon.HasOverlap(search_beam)) {
         right_most_found = true;
         right_most_angle = beam_heading;
       }
-
+      // 如果最右边界已找到，且障碍物的感知多边形与搜索光束无重叠，则更新左边界角度并跳出循环。
       if (right_most_found && !obstacle_polygon.HasOverlap(search_beam)) {
         left_most_angle = beam_heading;
         break;
       }
     }
+    // 如果最右边界未找到，则继续处理下一个障碍物。（说明该障碍物不在搜索范围内）
     if (!right_most_found) {
       // obstacle is not in search range
       continue;
     }
+    // 判断阈值，过滤掉小的障碍物
     if (std::fabs(common::math::NormalizeAngle(
             left_most_angle - right_most_angle)) > is_block_angle_threshold) {
       return true;

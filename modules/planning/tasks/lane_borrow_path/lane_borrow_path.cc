@@ -56,12 +56,16 @@ bool LaneBorrowPath::Init(const std::string& config_dir,
 
 apollo::common::Status LaneBorrowPath::Process(
     Frame* frame, ReferenceLineInfo* reference_line_info) {
+
+  // 如果运行不允许接道，或者路径重复使用，则直接跳过
   if (!config_.is_allow_lane_borrowing() ||
       reference_line_info->path_reusable()) {
     ADEBUG << "path reusable" << reference_line_info->path_reusable()
            << ",skip";
     return Status::OK();
   }
+
+  // 根据自车、参考线和障碍物判断是否必须借道，并更新借道方向
   if (!IsNecessaryToBorrowLane()) {
     ADEBUG << "No need to borrow lane";
     return Status::OK();
@@ -243,9 +247,14 @@ bool LaneBorrowPath::GetBoundaryFromNeighborLane(
   // Sanity checks.
   CHECK_NOTNULL(path_bound);
   ACHECK(!path_bound->empty());
+
+  // 获取当前参考线
   const ReferenceLine& reference_line = reference_line_info_->reference_line();
+
+  // 获取自车宽度
   double adc_lane_width = PathBoundsDeciderUtil::GetADCLaneWidth(
       reference_line, init_sl_state_.first[0]);
+
   double offset_to_map = 0;
   bool borrowing_reverse_lane = false;
   reference_line.GetOffsetToMap(init_sl_state_.first[0], &offset_to_map);
@@ -254,9 +263,12 @@ bool LaneBorrowPath::GetBoundaryFromNeighborLane(
   double past_lane_left_width = adc_lane_width / 2.0;
   double past_lane_right_width = adc_lane_width / 2.0;
   int path_blocked_idx = -1;
+
+  // 遍历所有边界
   for (size_t i = 0; i < path_bound->size(); ++i) {
     double curr_s = (*path_bound)[i].s;
     // 1. Get the current lane width at current point.
+    // 计算当前车道参考点的左右宽度
     double curr_lane_left_width = 0.0;
     double curr_lane_right_width = 0.0;
     double offset_to_lane_center = 0.0;
@@ -273,6 +285,7 @@ bool LaneBorrowPath::GetBoundaryFromNeighborLane(
       past_lane_right_width = curr_lane_right_width;
     }
     // 2. Get the neighbor lane widths at the current point.
+    // 基于是左车道还是右车道，获取邻近车道宽度
     double curr_neighbor_lane_width = 0.0;
     if (CheckLaneBoundaryType(*reference_line_info_, curr_s, pass_direction)) {
       hdmap::Id neighbor_lane_id;
@@ -312,6 +325,7 @@ bool LaneBorrowPath::GetBoundaryFromNeighborLane(
     }
     // 3. Calculate the proper boundary based on lane-width, ADC's position,
     //    and ADC's velocity.
+    // 计算扩展到邻近车道后的边界
     double offset_to_map = 0.0;
     reference_line.GetOffsetToMap(curr_s, &offset_to_map);
 
@@ -331,6 +345,7 @@ bool LaneBorrowPath::GetBoundaryFromNeighborLane(
     curr_right_bound = curr_right_bound_lane - offset_to_map;
 
     // 4. Update the boundary.
+    // 减去车宽
     if (!PathBoundsDeciderUtil::UpdatePathBoundaryWithBuffer(
             curr_left_bound, curr_right_bound, BoundType::LANE, BoundType::LANE,
             "", "", &path_bound->at(i))) {
@@ -340,36 +355,51 @@ bool LaneBorrowPath::GetBoundaryFromNeighborLane(
       break;
     }
   }
+
+  // 裁剪到path_blocked_idx？
   PathBoundsDeciderUtil::TrimPathBounds(path_blocked_idx, path_bound);
   *borrow_lane_type = borrowing_reverse_lane ? "reverse" : "forward";
   return true;
 }
+//
 void LaneBorrowPath::UpdateSelfPathInfo() {
+  // 如果当前路径就是之前的路径，且没有障碍物
   auto cur_path = reference_line_info_->path_data();
   if (!cur_path.Empty() &&
       cur_path.path_label().find("self") != std::string::npos &&
       cur_path.blocking_obstacle_id().empty()) {
+    // 计数值+1
     use_self_lane_ = std::min(use_self_lane_ + 1, 10);
   } else {
+    // 计数值=0
     use_self_lane_ = 0;
   }
+  // 记录当前路径的障碍物id
   blocking_obstacle_id_ = cur_path.blocking_obstacle_id();
 }
 bool LaneBorrowPath::IsNecessaryToBorrowLane() {
   auto* mutable_path_decider_status = injector_->planning_context()
                                           ->mutable_planning_status()
                                           ->mutable_path_decider();
+
+  // 如果原来已经处于借道状态
   if (mutable_path_decider_status->is_in_path_lane_borrow_scenario()) {
+
+    // 更新当前路径的计数值
     UpdateSelfPathInfo();
     // If originally borrowing neighbor lane:
+    // 如果当前路径已经使用了一段时间
     if (use_self_lane_ >= 6) {
       // If have been able to use self-lane for some time, then switch to
       // non-lane-borrowing.
+      // 退出借道状态
       mutable_path_decider_status->set_is_in_path_lane_borrow_scenario(false);
       decided_side_pass_direction_.clear();
       AINFO << "Switch from LANE-BORROW path to SELF-LANE path.";
     }
-  } else {
+  } 
+  // 如果不在借道状态
+  else {
     // If originally not borrowing neighbor lane:
     AINFO << "Blocking obstacle ID["
           << mutable_path_decider_status->front_static_obstacle_id() << "]";
@@ -400,14 +430,21 @@ bool LaneBorrowPath::IsNecessaryToBorrowLane() {
       // first time init decided_side_pass_direction
       bool left_borrowable;
       bool right_borrowable;
+      // 判断左右车道是否可行
       CheckLaneBorrow(*reference_line_info_, &left_borrowable,
                       &right_borrowable);
+
+      // 如果都不可行，不可借道
       if (!left_borrowable && !right_borrowable) {
         mutable_path_decider_status->set_is_in_path_lane_borrow_scenario(false);
         AINFO << "LEFT AND RIGHT LANE CAN NOT BORROW";
         return false;
-      } else {
+      } 
+      // 否则，可以借道
+      else {
         mutable_path_decider_status->set_is_in_path_lane_borrow_scenario(true);
+
+        // 选择借道方向
         if (left_borrowable) {
           decided_side_pass_direction_.push_back(
               SidePassDirection::LEFT_BORROW);

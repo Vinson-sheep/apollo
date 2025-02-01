@@ -57,13 +57,13 @@ class QpSplineReferenceLineSmoother : public ReferenceLineSmoother {
 
   bool Solve();
 
-  bool ExtractEvaluatedPoints(
-      const ReferenceLine& raw_reference_line, const std::vector<double>& vec_t,
-      std::vector<common::PathPoint>* const path_points) const;
+//   bool ExtractEvaluatedPoints(
+//       const ReferenceLine& raw_reference_line, const std::vector<double>& vec_t,
+//       std::vector<common::PathPoint>* const path_points) const;
 
-  bool GetSFromParamT(const double t, double* const s) const;
+//   bool GetSFromParamT(const double t, double* const s) const;
 
-  std::uint32_t FindIndex(const double t) const;
+//   std::uint32_t FindIndex(const double t) const;
 
  private:
   std::vector<double> t_knots_;

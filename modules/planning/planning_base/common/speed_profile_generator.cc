@@ -34,15 +34,18 @@ namespace planning {
 using apollo::common::SpeedPoint;
 
 void SpeedProfileGenerator::FillEnoughSpeedPoints(SpeedData* const speed_data) {
+  // 提取最后一个速度点
   double last_point_t = 0.0;
   double last_point_s = 0.0;
   if (!speed_data->empty()) {
     last_point_t = speed_data->back().t();
     last_point_s = speed_data->back().s();
   }
+  // 如果t已经满足需求，跳过
   if (last_point_t >= FLAGS_fallback_total_time) {
     return;
   }
+  // 填充冗余速度点
   for (double t = last_point_t + FLAGS_fallback_time_unit;
        t < FLAGS_fallback_total_time; t += FLAGS_fallback_time_unit) {
     speed_data->AppendSpeedPoint(last_point_s, t, 0.0, 0.0, 0.0);

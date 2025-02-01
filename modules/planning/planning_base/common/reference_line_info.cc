@@ -569,39 +569,50 @@ RSSInfo* ReferenceLineInfo::mutable_rss_info() { return &rss_info_; }
 bool ReferenceLineInfo::CombinePathAndSpeedProfile(
     const double relative_time, const double start_s,
     DiscretizedTrajectory* ptr_discretized_trajectory) {
+
   ACHECK(ptr_discretized_trajectory != nullptr);
   // use varied resolution to reduce data load but also provide enough data
   // point for control module
-  const double kDenseTimeResoltuion = FLAGS_trajectory_time_min_interval;
-  const double kSparseTimeResolution = FLAGS_trajectory_time_max_interval;
-  const double kDenseTimeSec = FLAGS_trajectory_time_high_density_period;
+  const double kDenseTimeResoltuion = FLAGS_trajectory_time_min_interval; // 0.02
+  const double kSparseTimeResolution = FLAGS_trajectory_time_max_interval;  // 0.1
+  const double kDenseTimeSec = FLAGS_trajectory_time_high_density_period; // 1.0
 
+  // 如果sl路径不存在，返回失败
   if (path_data_.discretized_path().empty()) {
     AERROR << "path data is empty";
     return false;
   }
 
+  // 如果st速度不存在，返回失败
   if (speed_data_.empty()) {
     AERROR << "speed profile is empty";
     return false;
   }
 
+  // 前半部分采用稠密采样
+  // 后半部分采用稀疏采样
   for (double cur_rel_time = 0.0; cur_rel_time < speed_data_.TotalTime();
        cur_rel_time += (cur_rel_time < kDenseTimeSec ? kDenseTimeResoltuion
                                                      : kSparseTimeResolution)) {
+
+    // 获取速度点
     common::SpeedPoint speed_point;
     if (!speed_data_.EvaluateByTime(cur_rel_time, &speed_point)) {
       AERROR << "Fail to get speed point with relative time " << cur_rel_time;
       return false;
     }
 
+    // 如果速度点不在sl路径范围内，终止循环
     if (speed_point.s() > path_data_.discretized_path().Length()) {
       break;
     }
+
+    // 计算位置点
     common::PathPoint path_point =
         path_data_.GetPathPointWithPathS(speed_point.s());
     path_point.set_s(path_point.s() + start_s);
 
+    // 插入轨迹点 (sl坐标)
     common::TrajectoryPoint trajectory_point;
     trajectory_point.mutable_path_point()->CopyFrom(path_point);
     trajectory_point.set_v(speed_point.v());
@@ -609,6 +620,8 @@ bool ReferenceLineInfo::CombinePathAndSpeedProfile(
     trajectory_point.set_relative_time(speed_point.t() + relative_time);
     ptr_discretized_trajectory->AppendTrajectoryPoint(trajectory_point);
   }
+
+  // 如果是倒车轨迹，那么需要修正轨迹点
   if (path_data_.is_reverse_path()) {
     std::for_each(ptr_discretized_trajectory->begin(),
                   ptr_discretized_trajectory->end(),
@@ -621,6 +634,7 @@ bool ReferenceLineInfo::CombinePathAndSpeedProfile(
     AINFO << "reversed path";
     ptr_discretized_trajectory->SetIsReversed(true);
   }
+  
   return true;
 }
 
@@ -635,12 +649,16 @@ bool ReferenceLineInfo::AdjustTrajectoryWhichStartsFromCurrentPos(
   ACHECK(adjusted_trajectory != nullptr);
   // find insert index by check heading
   static constexpr double kMaxAngleDiff = M_PI_2;
+
+  // 获取起始状态
   const double start_point_heading = planning_start_point.path_point().theta();
   const double start_point_x = planning_start_point.path_point().x();
   const double start_point_y = planning_start_point.path_point().y();
   const double start_point_relative_time = planning_start_point.relative_time();
 
   int insert_idx = -1;
+
+  // 从前往后遍历历史轨迹，寻找拼接点索引值
   for (size_t i = 0; i < trajectory.size(); ++i) {
     // skip trajectory_points early than planning_start_point
     if (trajectory[i].relative_time() <= start_point_relative_time) {
@@ -662,6 +680,7 @@ bool ReferenceLineInfo::AdjustTrajectoryWhichStartsFromCurrentPos(
     return false;
   }
 
+  // 拼接轨迹前半部分
   DiscretizedTrajectory cut_trajectory(trajectory);
   cut_trajectory.erase(cut_trajectory.begin(),
                        cut_trajectory.begin() + insert_idx);
@@ -674,6 +693,8 @@ bool ReferenceLineInfo::AdjustTrajectoryWhichStartsFromCurrentPos(
   // position(relative time = 0) are the same. Therefore any conflicts on the
   // relative time including the one below should return false and inspected its
   // cause.
+
+  // 如果轨迹size不对，或者时间不对，返回false
   if (cut_trajectory.size() > 1 && cut_trajectory.front().relative_time() >=
                                        cut_trajectory[1].relative_time()) {
     AERROR << "planning init point relative_time["
@@ -685,6 +706,8 @@ bool ReferenceLineInfo::AdjustTrajectoryWhichStartsFromCurrentPos(
 
   // In class TrajectoryStitcher, the planing_init_point is set to have s as 0,
   // so adjustment is needed to be done on the other points
+
+  // 拼接轨迹后半部分
   double accumulated_s = 0.0;
   for (size_t i = 1; i < cut_trajectory.size(); ++i) {
     const auto& pre_path_point = cut_trajectory[i - 1].path_point();
@@ -703,6 +726,8 @@ bool ReferenceLineInfo::AdjustTrajectoryWhichStartsFromCurrentPos(
   const double kDenseTimeResoltuion = FLAGS_trajectory_time_min_interval;
   const double kSparseTimeResolution = FLAGS_trajectory_time_max_interval;
   const double kDenseTimeSec = FLAGS_trajectory_time_high_density_period;
+
+  // 将当前轨迹整理到adjusted_trajectory
   for (double cur_rel_time = cut_trajectory.front().relative_time();
        cur_rel_time <= cut_trajectory.back().relative_time();
        cur_rel_time += (cur_rel_time < kDenseTimeSec ? kDenseTimeResoltuion

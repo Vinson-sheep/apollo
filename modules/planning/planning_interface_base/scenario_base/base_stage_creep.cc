@@ -43,11 +43,13 @@ Status BaseStageCreep::ProcessCreep(
   CHECK_NOTNULL(frame);
   CHECK_NOTNULL(reference_line_info);
 
+  // 提取让行overlap的s和id
   double overlap_end_s = 0.0;
   std::string current_overlap_id;
   bool is_get_overlap_info = GetOverlapStopInfo(
       frame, reference_line_info, &overlap_end_s, &current_overlap_id);
 
+  // 如果找到了，做停止决策
   if (is_get_overlap_info) {
     std::string virtual_obstacle_id = CREEP_VO_ID_PREFIX_ + current_overlap_id;
     const double creep_stop_s =

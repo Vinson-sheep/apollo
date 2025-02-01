@@ -38,6 +38,7 @@ class Frame;
 class ReferenceLineInfo;
 class CreepStageConfig;
 
+// 低速爬行专用
 class BaseStageCreep : public Stage {
  public:
   common::Status ProcessCreep(Frame* frame,

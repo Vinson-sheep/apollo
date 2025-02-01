@@ -62,9 +62,11 @@ STBoundaryMapper::STBoundaryMapper(
       planning_max_time_(planning_time),
       injector_(injector) {}
 
+// path_decision 存放了所有已经做出决策的障碍物
 Status STBoundaryMapper::ComputeSTBoundary(PathDecision* path_decision) const {
   // Sanity checks.
   CHECK_GT(planning_max_time_, 0.0);
+  // 如果路径点小于两个，不合法
   if (path_data_.discretized_path().size() < 2) {
     AERROR << "Fail to get params because of too few path points. path points "
               "size: "
@@ -77,18 +79,27 @@ Status STBoundaryMapper::ComputeSTBoundary(PathDecision* path_decision) const {
   Obstacle* stop_obstacle = nullptr;
   ObjectDecisionType stop_decision;
   double min_stop_s = std::numeric_limits<double>::max();
+
+  // 遍历所有障碍物
   for (const auto* ptr_obstacle_item : path_decision->obstacles().Items()) {
+
+    // 基于ID提取障碍物
     Obstacle* ptr_obstacle = path_decision->Find(ptr_obstacle_item->Id());
     ACHECK(ptr_obstacle != nullptr);
 
     // If no longitudinal decision has been made, then plot it onto ST-graph.
+
+    // 如果障碍物没有纵向决策，根据预测轨迹绘制障碍物st图
     if (!ptr_obstacle->HasLongitudinalDecision()) {
       ComputeSTBoundary(ptr_obstacle);
       continue;
     }
 
+    // 
     // If there is a longitudinal decision, then fine-tune boundary.
     const auto& decision = ptr_obstacle->LongitudinalDecision();
+
+    // 如果障碍物纵向决策为停止，按照静态障碍物生成st图
     if (decision.has_stop()) {
       // 1. Store the closest stop fence info.
       // TODO(all): store ref. s value in stop decision; refine the code then.
@@ -101,16 +112,22 @@ Status STBoundaryMapper::ComputeSTBoundary(PathDecision* path_decision) const {
         min_stop_s = stop_s;
         stop_decision = decision;
       }
-    } else if (decision.has_follow() || decision.has_overtake() ||
+    } 
+    // 否则，如果有其他纵向决策，那么依据决策类型生成st图
+    else if (decision.has_follow() || decision.has_overtake() ||
                decision.has_yield()) {
       // 2. Depending on the longitudinal overtake/yield decision,
       //    fine-tune the upper/lower st-boundary of related obstacles.
       ComputeSTBoundaryWithDecision(ptr_obstacle, decision);
-    } else if (!decision.has_ignore()) {
+    } 
+    // 如果不可以忽略，那么报错
+    else if (!decision.has_ignore()) {
       // 3. Ignore those unrelated obstacles.
       AWARN << "No mapping for decision: " << decision.DebugString();
     }
   }
+
+  // 按照静态障碍物生成st图
   if (stop_obstacle) {
     bool success = MapStopDecision(stop_obstacle, stop_decision);
     if (!success) {
@@ -123,9 +140,14 @@ Status STBoundaryMapper::ComputeSTBoundary(PathDecision* path_decision) const {
   return Status::OK();
 }
 
+// 对静态障碍物生成st图
 bool STBoundaryMapper::MapStopDecision(
     Obstacle* stop_obstacle, const ObjectDecisionType& stop_decision) const {
+  
+  // 如果不是静态障碍物，报错
   DCHECK(stop_decision.has_stop()) << "Must have stop decision";
+
+  // 将停止点转换为sl坐标
   common::SLPoint stop_sl_point;
   reference_line_.XYToSL(stop_decision.stop().stop_point(), &stop_sl_point);
 
@@ -133,6 +155,7 @@ bool STBoundaryMapper::MapStopDecision(
   const double stop_ref_s =
       stop_sl_point.s() - vehicle_param_.front_edge_to_center();
 
+  // 获取停止点在参考线的投影点
   if (stop_ref_s > path_data_.frenet_frame_path().back().s()) {
     st_stop_s = path_data_.discretized_path().back().s() +
                 (stop_ref_s - path_data_.frenet_frame_path().back().s());
@@ -144,10 +167,12 @@ bool STBoundaryMapper::MapStopDecision(
     st_stop_s = stop_point.s();
   }
 
+  // 计算s的区间
   const double s_min = std::fmax(0.0, st_stop_s);
   const double s_max = std::fmax(
       s_min, std::fmax(planning_max_distance_, reference_line_.Length()));
 
+  // 计算st图
   std::vector<std::pair<STPoint, STPoint>> point_pairs;
   point_pairs.emplace_back(STPoint(s_min, 0.0), STPoint(s_max, 0.0));
   point_pairs.emplace_back(
@@ -169,15 +194,19 @@ void STBoundaryMapper::ComputeSTBoundary(Obstacle* obstacle) const {
   std::vector<STPoint> lower_points;
   std::vector<STPoint> upper_points;
 
+  // 遍历所有障碍物，获取障碍物与路径的重叠区域
   if (!GetOverlapBoundaryPoints(path_data_.discretized_path(), *obstacle,
                                 &upper_points, &lower_points)) {
     return;
   }
 
+  // 将重叠区域实例化
   auto boundary = STBoundary::CreateInstance(lower_points, upper_points);
   boundary.set_id(obstacle->Id());
 
   // TODO(all): potential bug here.
+  // 如果障碍物之前存在st图，那么沿用st图类型
+  // 否则，使用新st图类型
   const auto& prev_st_boundary = obstacle->path_st_boundary();
   const auto& ref_line_st_boundary = obstacle->reference_line_st_boundary();
   if (!prev_st_boundary.IsEmpty()) {
@@ -189,6 +218,7 @@ void STBoundaryMapper::ComputeSTBoundary(Obstacle* obstacle) const {
   obstacle->set_path_st_boundary(boundary);
 }
 
+// 遍历所有障碍物，获取与路径重叠的边界
 bool STBoundaryMapper::GetOverlapBoundaryPoints(
     const std::vector<PathPoint>& path_points, const Obstacle& obstacle,
     std::vector<STPoint>* upper_points,
@@ -196,6 +226,8 @@ bool STBoundaryMapper::GetOverlapBoundaryPoints(
   // Sanity checks.
   DCHECK(upper_points->empty());
   DCHECK(lower_points->empty());
+
+  // 如果路径点为空，则返回
   if (path_points.empty()) {
     AERROR << "No points in path_data_.discretized_path().";
     return false;
@@ -208,17 +240,21 @@ bool STBoundaryMapper::GetOverlapBoundaryPoints(
   double l_buffer =
       planning_status->status() == ChangeLaneStatus::IN_CHANGE_LANE
           ? speed_bounds_config_.lane_change_obstacle_nudge_l_buffer()
-          : FLAGS_nonstatic_obstacle_nudge_l_buffer;
+          : FLAGS_nonstatic_obstacle_nudge_l_buffer; // 横向裕度
 
+  // 提取障碍物轨迹和尺寸
   // Draw the given obstacle on the ST-graph.
   const auto& trajectory = obstacle.Trajectory();
   const double obstacle_length = obstacle.Perception().length();
   const double obstacle_width = obstacle.Perception().width();
+
+  // 如果障碍物轨迹为空
   if (trajectory.trajectory_point().empty()) {
     bool box_check_collision = false;
 
     // For those with no predicted trajectories, just map the obstacle's
     // current position to ST-graph and always assume it's static.
+    // 轨迹为空一般是静态障碍物，如果不是，那么肯定有问题
     if (!obstacle.IsStatic()) {
       AWARN << "Non-static obstacle[" << obstacle.Id()
             << "] has NO prediction trajectory."
@@ -227,16 +263,20 @@ bool STBoundaryMapper::GetOverlapBoundaryPoints(
 
     const Box2d& obs_box = obstacle.PerceptionBoundingBox();
 
+    // 遍历所有路径点
     for (const auto& curr_point_on_path : path_points) {
+      // 忽略超出阈值的路径点
       if (curr_point_on_path.s() > planning_max_distance_) {
         break;
       }
+      // 校验碰撞
       if (CheckOverlap(curr_point_on_path, obs_box, l_buffer)) {
         box_check_collision = true;
         break;
       }
     }
 
+    // 如果轨迹与静态障碍物有碰撞
     if (box_check_collision) {
       // const double backward_distance =
       // -vehicle_param_.front_edge_to_center();
@@ -259,6 +299,9 @@ bool STBoundaryMapper::GetOverlapBoundaryPoints(
           // It is an unrotated rectangle appearing on the ST-graph.
           // TODO(jiacheng): reconsider the backward_distance, it might be
           // unnecessary, but forward_distance is indeed meaningful though.
+
+          // speed_bounds_config_.point_extension() 就是一个膨胀裕度
+          // 计算静态障碍物的st图
           lower_points->emplace_back(
               low_s - speed_bounds_config_.point_extension(), 0.0);
           lower_points->emplace_back(
@@ -273,9 +316,12 @@ bool STBoundaryMapper::GetOverlapBoundaryPoints(
         }
       }
     }
-  } else {
+  } 
+  // 如果障碍物存在轨迹，大概是动态障碍物
+  else {
     // For those with predicted trajectories (moving obstacles):
     // 1. Subsample to reduce computation time.
+    // 对当前路径点进行抽稀
     const int default_num_point = 50;
     DiscretizedPath discretized_path;
     if (path_points.size() > 2 * default_num_point) {
@@ -302,18 +348,26 @@ bool STBoundaryMapper::GetOverlapBoundaryPoints(
     bool trajectory_point_collision_status = false;
     int previous_index = 0;
 
+    // 遍历障碍物所有轨迹点
     for (int i = 0; i < trajectory.trajectory_point_size();
          i = std::min(i + trajectory_step,
                       trajectory.trajectory_point_size() - 1)) {
+
+      // 提取单个轨迹点
       const auto& trajectory_point = trajectory.trajectory_point(i);
+
+      // 提取障碍物形状
       Polygon2d obstacle_shape =
           obstacle.GetObstacleTrajectoryPolygon(trajectory_point);
 
+      // 忽略某时间阈值之前的障碍物轨迹点
       double trajectory_point_time = trajectory_point.relative_time();
       static constexpr double kNegtiveTimeThreshold = -1.0;
       if (trajectory_point_time < kNegtiveTimeThreshold) {
         continue;
       }
+
+      // 从后往前遍历？为什么这么复杂
       bool collision = CheckOverlapWithTrajectoryPoint(
           discretized_path, obstacle_shape, upper_points, lower_points,
           l_buffer, default_num_point, obstacle_length, obstacle_width,
@@ -339,6 +393,7 @@ bool STBoundaryMapper::GetOverlapBoundaryPoints(
     }
   }
 
+  // 按t进行排序
   // Sanity checks and return.
   std::sort(lower_points->begin(), lower_points->end(),
             [](const STPoint& a, const STPoint& b) { return a.t() < b.t(); });
@@ -353,13 +408,20 @@ bool STBoundaryMapper::CheckOverlapWithTrajectoryPoint(
     std::vector<STPoint>* upper_points, std::vector<STPoint>* lower_points,
     const double l_buffer, int default_num_point, const double obstacle_length,
     const double obstacle_width, const double trajectory_point_time) const {
+  // 以车半长作为遍历步长
   const double step_length = vehicle_param_.front_edge_to_center();
   auto path_len = std::min(speed_bounds_config_.max_trajectory_len(),
                            discretized_path.Length());
+
+  // 
   // Go through every point of the ADC's path.
   for (double path_s = 0.0; path_s < path_len; path_s += step_length) {
+
+    // 估算当前路径点
     const auto curr_adc_path_point =
         discretized_path.Evaluate(path_s + discretized_path.front().s());
+
+    // 如果路径当前点
     if (CheckOverlap(curr_adc_path_point, obstacle_shape, l_buffer)) {
       // Found overlap, start searching with higher resolution
       // const double backward_distance = -step_length;
@@ -426,21 +488,26 @@ void STBoundaryMapper::ComputeSTBoundaryWithDecision(
   std::vector<STPoint> lower_points;
   std::vector<STPoint> upper_points;
 
+  // 如果障碍物st图已经初始化，沿用旧st图
   if (FLAGS_use_st_drivable_boundary &&
       obstacle->is_path_st_boundary_initialized()) {
     const auto& path_st_boundary = obstacle->path_st_boundary();
     lower_points = path_st_boundary.lower_points();
     upper_points = path_st_boundary.upper_points();
-  } else {
+  } 
+  // 否则，按照预测轨迹生成st图
+  else {
     if (!GetOverlapBoundaryPoints(path_data_.discretized_path(), *obstacle,
                                   &upper_points, &lower_points)) {
       return;
     }
   }
 
+
   auto boundary = STBoundary::CreateInstance(lower_points, upper_points);
 
   // get characteristic_length and boundary_type.
+  // 特殊纵向决策需要特殊的st图
   STBoundary::BoundaryType b_type = STBoundary::BoundaryType::UNKNOWN;
   double characteristic_length = 0.0;
   if (decision.has_follow()) {
@@ -463,7 +530,8 @@ void STBoundaryMapper::ComputeSTBoundaryWithDecision(
   }
   boundary.SetBoundaryType(b_type);
   boundary.set_id(obstacle->Id());
-  boundary.SetCharacteristicLength(characteristic_length);
+  // 障碍物纵向决策带来特殊CharacteristicLength，用处未知
+  boundary.SetCharacteristicLength(characteristic_length);  
   obstacle->set_path_st_boundary(boundary);
 }
 

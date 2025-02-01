@@ -47,6 +47,7 @@ class Stage {
  public:
   Stage();
 
+  // context是scenario级别的上下文
   virtual bool Init(const StagePipeline& config,
                     const std::shared_ptr<DependencyInjector>& injector,
                     const std::string& config_dir, void* context);
@@ -79,6 +80,7 @@ class Stage {
 
   StageResult ExecuteTaskOnOpenSpace(Frame* frame);
 
+  // 为stage提供快速结束scenario机制
   virtual StageResult FinishScenario();
 
   void RecordDebugInfo(ReferenceLineInfo* reference_line_info,

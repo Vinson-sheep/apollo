@@ -65,6 +65,7 @@ bool SpeedDecider::Init(const std::string& config_dir, const std::string& name,
   return true;
 }
 
+// 任务用于根据规划的粗速度曲线产生对障碍物的纵向决策
 common::Status SpeedDecider::Execute(Frame* frame,
                                      ReferenceLineInfo* reference_line_info) {
   Task::Execute(frame, reference_line_info);
@@ -218,16 +219,22 @@ bool SpeedDecider::IsFollowTooClose(const Obstacle& obstacle) const {
 
 Status SpeedDecider::MakeObjectDecision(
     const SpeedData& speed_profile, PathDecision* const path_decision) const {
+
+  // 检查速度曲线的合法性
   if (speed_profile.size() < 2) {
     const std::string msg = "dp_st_graph failed to get speed profile.";
     AERROR << msg;
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
+  // 遍历所有障碍物
   for (const auto* obstacle : path_decision->obstacles().Items()) {
+
+    // 提取障碍物st边界边界
     auto* mutable_obstacle = path_decision->Find(obstacle->Id());
     const auto& boundary = mutable_obstacle->path_st_boundary();
 
+    // 对于没有st边界或者st边界在可行驶ST区域以外的障碍物产生忽略决策
     if (boundary.IsEmpty() || boundary.max_s() < 0.0 ||
         boundary.max_t() < 0.0 ||
         boundary.min_t() >= speed_profile.back().t()) {
@@ -239,6 +246,7 @@ Status SpeedDecider::MakeObjectDecision(
       continue;
     }
 
+    // 对于不再车道上的虚拟障碍物产生忽略决策
     // for Virtual obstacle, skip if center point NOT "on lane"
     if (obstacle->IsVirtual()) {
       const auto& obstacle_box = obstacle->PerceptionBoundingBox();
@@ -247,6 +255,7 @@ Status SpeedDecider::MakeObjectDecision(
       }
     }
 
+    // 对于行人产生停止决策
     // always STOP for pedestrian
     if (config_.is_stop_for_pedestrain() &&
         CheckStopForPedestrian(*mutable_obstacle)) {
@@ -259,6 +268,8 @@ Status SpeedDecider::MakeObjectDecision(
       continue;
     }
 
+    // 根据ST曲线和障碍物ST边界的位置对障碍物产生决策：
+
     auto location = GetSTLocation(path_decision, speed_profile, boundary);
 
     if (!FLAGS_use_st_drivable_boundary) {
@@ -268,6 +279,12 @@ Status SpeedDecider::MakeObjectDecision(
         }
       }
     }
+
+
+    // 如果ST曲线在障碍物下方，且障碍物行驶方向和主车相同，产生跟车决策
+    // 如果ST曲线 在障碍物下方，且障碍物横穿主车路径，产生让行决策 
+    // 如果ST曲线 在障碍物下方，且障碍物距离主车过近，产生停止决策
+    // 如果ST曲线 在障碍物中间穿过，且障碍物为阻塞障碍物，产生停车决策
 
     switch (location) {
       case BELOW:

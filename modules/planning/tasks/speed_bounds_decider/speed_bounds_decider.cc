@@ -50,12 +50,16 @@ bool SpeedBoundsDecider::Init(
   return Decider::LoadConfig<SpeedBoundsDeciderConfig>(&config_);
 }
 
+
+// 为障碍物生成st图，依据场景生成速度限制，最终生成全局st图
 Status SpeedBoundsDecider::Process(
     Frame *const frame, ReferenceLineInfo *const reference_line_info) {
   // retrieve data from frame and reference_line_info
+  // 提取规划初始状态和规划sl路径,以及参考线
   const PathData &path_data = reference_line_info->path_data();
   const TrajectoryPoint &init_point = frame->PlanningStartPoint();
   const ReferenceLine &reference_line = reference_line_info->reference_line();
+  
   PathDecision *const path_decision = reference_line_info->path_decision();
 
   // 1. Map obstacles into st graph
@@ -68,6 +72,7 @@ Status SpeedBoundsDecider::Process(
     path_decision->EraseStBoundaries();
   }
 
+  // 将障碍物预测轨迹投影到ST空间，根据决策构建ST边界，如果没有决策保留障碍物上下两个边界。
   if (boundary_mapper.ComputeSTBoundary(path_decision).code() ==
       ErrorCode::PLANNING_ERROR) {
     const std::string msg = "Mapping obstacle failed.";
@@ -79,8 +84,11 @@ Status SpeedBoundsDecider::Process(
   ADEBUG << "Time for ST Boundary Mapping = " << diff.count() * 1000
          << " msec.";
 
+
+  // 遍历所有的障碍物，提取所有障碍物st图到boundaries
   std::vector<const STBoundary *> boundaries;
   for (auto *obstacle : path_decision->obstacles().Items()) {
+    // 获取id和st边界
     const auto &id = obstacle->Id();
     const auto &st_boundary = obstacle->path_st_boundary();
     if (!st_boundary.IsEmpty()) {
@@ -89,17 +97,22 @@ Status SpeedBoundsDecider::Process(
       } else {
         path_decision->Find(id)->SetBlockingObstacle(true);
       }
+      // 将st边界加入到全局边界
       st_boundary.PrintDebug("_obs_st_bounds");
       boundaries.push_back(&st_boundary);
     }
   }
 
+  // ？？
   const double min_s_on_st_boundaries = SetSpeedFallbackDistance(path_decision);
 
   // 2. Create speed limit along path
+  // 生成速度限制
   SpeedLimitDecider speed_limit_decider(config_, reference_line, path_data);
 
   SpeedLimit speed_limit;
+
+  // 根据道路限速，障碍物nudge限速，产生限速曲线
   if (!speed_limit_decider
            .GetSpeedLimits(path_decision->obstacles(), &speed_limit)
            .ok()) {
@@ -127,11 +140,12 @@ Status SpeedBoundsDecider::Process(
                           path_data_length, total_time_by_conf, st_graph_debug);
 
   // Create and record st_graph debug info
-  RecordSTGraphDebug(*st_graph_data, st_graph_debug);
+  // RecordSTGraphDebug(*st_graph_data, st_graph_debug);
 
   return Status::OK();
 }
 
+// ？？
 double SpeedBoundsDecider::SetSpeedFallbackDistance(
     PathDecision *const path_decision) {
   // Set min_s_on_st_boundaries to guide speed fallback.

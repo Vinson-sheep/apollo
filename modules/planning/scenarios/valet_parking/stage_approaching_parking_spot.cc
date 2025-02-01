@@ -43,6 +43,7 @@ StageResult StageApproachingParkingSpot::Process(
   StageResult result;
   auto scenario_context = GetContextAs<ValetParkingContext>();
 
+  // 如果没有停车点，返回错误
   if (scenario_context->target_parking_spot_id.empty()) {
     return result.SetStageStatus(StageStatusType::ERROR);
   }
@@ -54,6 +55,8 @@ StageResult StageApproachingParkingSpot::Process(
   *(frame->mutable_open_space_info()->mutable_pre_stop_rightaway_point()) =
       scenario_context->pre_stop_rightaway_point;
   auto* reference_lines = frame->mutable_reference_line_info();
+
+  //
   for (auto& reference_line : *reference_lines) {
     auto* path_decision = reference_line.path_decision();
     if (nullptr == path_decision) {
@@ -69,6 +72,8 @@ StageResult StageApproachingParkingSpot::Process(
     dest_obstacle->AddLongitudinalDecision("ignore-dest-in-valet-parking",
                                            decision);
   }
+
+  // 执行所有的task
   result = ExecuteTaskOnReferenceLine(planning_init_point, frame);
 
   scenario_context->pre_stop_rightaway_flag =
@@ -76,15 +81,20 @@ StageResult StageApproachingParkingSpot::Process(
   scenario_context->pre_stop_rightaway_point =
       frame->open_space_info().pre_stop_rightaway_point();
 
+  // 检查车辆是否停止
+  // 为什么要先停车
   if (CheckADCStop(*frame)) {
     next_stage_ = "VALET_PARKING_PARKING";
     return StageResult(StageStatusType::FINISHED);
   }
+
+  // 如果出错
   if (result.HasError()) {
     AERROR << "StopSignUnprotectedStagePreStop planning error";
     return result.SetStageStatus(StageStatusType::ERROR);
   }
 
+  // 返回成功
   return result.SetStageStatus(StageStatusType::RUNNING);
 }
 
@@ -95,6 +105,8 @@ bool StageApproachingParkingSpot::CheckADCStop(const Frame& frame) {
                                         ->GetConfig()
                                         .vehicle_param()
                                         .max_abs_speed_when_stopped();
+
+  // 如果线速度超过阈值，认为车辆没有停止                 
   if (adc_speed > max_adc_stop_speed) {
     ADEBUG << "ADC not stopped: speed[" << adc_speed << "]";
     return false;
@@ -107,6 +119,7 @@ bool StageApproachingParkingSpot::CheckADCStop(const Frame& frame) {
   const double distance_stop_line_to_adc_front_edge =
       stop_fence_start_s - adc_front_edge_s;
 
+  // 如果车头与停止障碍物距离不满足阈值，也认为车辆没有停止
   if (distance_stop_line_to_adc_front_edge >
       scenario_config_.max_valid_stop_distance()) {
     ADEBUG << "not a valid stop. too far from stop line.";

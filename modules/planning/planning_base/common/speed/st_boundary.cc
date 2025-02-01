@@ -127,6 +127,8 @@ bool STBoundary::GetUnblockSRange(const double curr_time, double* s_upper,
 
   *s_upper = FLAGS_speed_lon_decision_horizon;
   *s_lower = 0.0;
+
+  // 如果t不在范围内，跳过
   if (curr_time < min_t_ || curr_time > max_t_) {
     return true;
   }

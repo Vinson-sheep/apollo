@@ -54,30 +54,36 @@ bool RuleBasedStopDecider::Init(
 apollo::common::Status RuleBasedStopDecider::Process(
     Frame *const frame, ReferenceLineInfo *const reference_line_info) {
   // 1. Rule_based stop for side pass onto reverse lane
+  // 借对向车道超车时，检查是否存在感知盲区，如果有则产生停车决策
   if (config_.enable_stop_on_side_pass()) {
     StopOnSidePass(frame, reference_line_info);
   }
 
   // 2. Rule_based stop for urgent lane change
+  // 换道时接近换道终点没有成功换道产生停车决策
   if (config_.enable_lane_change_urgency_checking()) {
     CheckLaneChangeUrgency(frame);
   }
 
   // 3. Rule_based stop at path end position
+  // 路径终点产生停车决策
   AddPathEndStop(frame, reference_line_info);
 
   return Status::OK();
 }
 
 void RuleBasedStopDecider::CheckLaneChangeUrgency(Frame *const frame) {
+  // 直接进入循环，检查每个reference_line_info
   for (auto &reference_line_info : *frame->mutable_reference_line_info()) {
     // Check if the target lane is blocked or not
+    // 1. 检查目标道路是否阻塞，如果在change lane path上，就跳过
     if (reference_line_info.IsChangeLanePath()) {
       is_clear_to_change_lane_ = IsClearToChangeLane(&reference_line_info);
       is_change_lane_planning_succeed_ =
           reference_line_info.Cost() < kStraightForwardLineCost;
       continue;
     }
+    // 2.如果不是换道的场景，或者（目标lane没有阻塞）并且换道规划成功，跳过
     // If it's not in lane-change scenario || (target lane is not blocked &&
     // change lane planning succeed), skip
     if (frame->reference_line_info().size() <= 1 ||
@@ -89,6 +95,7 @@ void RuleBasedStopDecider::CheckLaneChangeUrgency(Frame *const frame) {
     const auto &route_end_waypoint =
         reference_line_info.Lanes().RouteEndWaypoint();
     // If can't get lane from the route's end waypoint, then skip
+    // 3.在route的末端无法获得lane，跳过
     if (!route_end_waypoint.lane) {
       continue;
     }
@@ -96,18 +103,21 @@ void RuleBasedStopDecider::CheckLaneChangeUrgency(Frame *const frame) {
     auto *reference_line = reference_line_info.mutable_reference_line();
     common::SLPoint sl_point;
     // Project the end point to sl_point on current reference lane
+    // 将当前参考线的点映射到frenet坐标系下
     if (reference_line->XYToSL(point, &sl_point) &&
         reference_line->IsOnLane(sl_point)) {
       // Check the distance from ADC to the end point of current routing
       double distance_to_passage_end =
           sl_point.s() - reference_line_info.AdcSlBoundary().end_s();
       // If ADC is still far from the end of routing, no need to stop, skip
+      // 4. 如果adc距离routing终点较远，不需要停止，跳过
       if (distance_to_passage_end >
           config_.approach_distance_for_lane_change()) {
         continue;
       }
       // In urgent case, set a temporary stop fence and wait to change lane
       // TODO(Jiaxuan Xu): replace the stop fence to more intelligent actions
+      // 5.如果遇到紧急情况，设置临时的stop fence，等待换道
       const std::string stop_wall_id = "lane_change_stop";
       std::vector<std::string> wait_for_obstacles;
       util::BuildStopDecision(
@@ -120,13 +130,17 @@ void RuleBasedStopDecider::CheckLaneChangeUrgency(Frame *const frame) {
 
 void RuleBasedStopDecider::AddPathEndStop(
     Frame *const frame, ReferenceLineInfo *const reference_line_info) {
+
+  // 路径不为空且起点到终点的距离不小于20m
   if (!reference_line_info->path_data().path_label().empty() &&
       reference_line_info->path_data().frenet_frame_path().back().s() -
               reference_line_info->path_data().frenet_frame_path().front().s() <
           config_.short_path_length_threshold()) {
+    // 创建虚拟墙的ID
     const std::string stop_wall_id =
         PATH_END_VO_ID_PREFIX + reference_line_info->path_data().path_label();
     std::vector<std::string> wait_for_obstacles;
+    // 创建stop fence
     util::BuildStopDecision(
         stop_wall_id,
         reference_line_info->path_data().frenet_frame_path().back().s() - 0.1,
@@ -137,25 +151,31 @@ void RuleBasedStopDecider::AddPathEndStop(
 
 void RuleBasedStopDecider::StopOnSidePass(
     Frame *const frame, ReferenceLineInfo *const reference_line_info) {
-  static bool check_clear;
-  static common::PathPoint change_lane_stop_path_point;
+      
+  // 注意下面两个为静态变量
+  static bool check_clear; // 默认false
+  static common::PathPoint change_lane_stop_path_point; 
 
   const PathData &path_data = reference_line_info->path_data();
   double stop_s_on_pathdata = 0.0;
 
+  // 找到"self"类型的路径，return
   if (path_data.path_label().find("self") != std::string::npos) {
     check_clear = false;
     change_lane_stop_path_point.Clear();
     return;
   }
 
+  // 判断是否需要重新检查
   if (check_clear &&
       CheckClearDone(*reference_line_info, change_lane_stop_path_point)) {
     check_clear = false;
   }
 
+  // 如果需要检查，且绕行车道是逆行车道，认为有停止必要
   if (!check_clear &&
       CheckSidePassStop(path_data, *reference_line_info, &stop_s_on_pathdata)) {
+    // 如果障碍物没有阻塞且可以换道，直接return
     if (!IsPerceptionBlocked(*reference_line_info, config_.search_beam_length(),
                              config_.search_beam_radius_intensity(),
                              config_.search_range(),
@@ -163,7 +183,9 @@ void RuleBasedStopDecider::StopOnSidePass(
         IsClearToChangeLane(reference_line_info)) {
       return;
     }
+    // 检查adc是否停在了stop fence前，否返回true
     if (!CheckADCStop(path_data, *reference_line_info, stop_s_on_pathdata)) {
+      // 设置stop fence，成功就执行 check_clear = true;
       if (!BuildSidePassStopFence(path_data, stop_s_on_pathdata,
                                   &change_lane_stop_path_point, frame,
                                   reference_line_info)) {
@@ -177,6 +199,7 @@ void RuleBasedStopDecider::StopOnSidePass(
   }
 }
 
+// 其实就是检查绕行车道是否是逆行车道
 // @brief Check if necessary to set stop fence used for nonscenario side pass
 bool RuleBasedStopDecider::CheckSidePassStop(
     const PathData &path_data, const ReferenceLineInfo &reference_line_info,
@@ -186,9 +209,12 @@ bool RuleBasedStopDecider::CheckSidePassStop(
   PathData::PathPointType last_path_point_type =
       PathData::PathPointType::UNKNOWN;
   for (const auto &point_guide : path_point_decision_guide) {
+    // 若上一点在车道内，这一点在逆行车道上
     if (last_path_point_type == PathData::PathPointType::IN_LANE &&
         std::get<1>(point_guide) ==
             PathData::PathPointType::OUT_ON_REVERSE_LANE) {
+
+      // 停止点取两条车道的交界处
       *stop_s_on_pathdata = std::get<0>(point_guide);
       // Approximate the stop fence s based on the vehicle position
       const auto &vehicle_config =
@@ -196,11 +222,15 @@ bool RuleBasedStopDecider::CheckSidePassStop(
       const double ego_front_to_center =
           vehicle_config.vehicle_param().front_edge_to_center();
       common::PathPoint stop_pathpoint;
+
+      // 获取停止点，如果获取失败，直接返回
       if (!path_data.GetPathPointWithRefS(*stop_s_on_pathdata,
                                           &stop_pathpoint)) {
         AERROR << "Can't get stop point on path data";
         return false;
       }
+
+      // 获取停止点朝向
       const double ego_theta = stop_pathpoint.theta();
       Vec2d shift_vec{ego_front_to_center * std::cos(ego_theta),
                       ego_front_to_center * std::sin(ego_theta)};
@@ -285,6 +315,7 @@ bool RuleBasedStopDecider::CheckADCStop(
 bool RuleBasedStopDecider::CheckClearDone(
     const ReferenceLineInfo &reference_line_info,
     const common::PathPoint &stop_point) {
+  // 获取ADC的SL坐标
   const double adc_front_edge_s = reference_line_info.AdcSlBoundary().end_s();
   const double adc_back_edge_s = reference_line_info.AdcSlBoundary().start_s();
   const double adc_start_l = reference_line_info.AdcSlBoundary().start_l();
@@ -295,9 +326,9 @@ bool RuleBasedStopDecider::CheckClearDone(
       (adc_front_edge_s + adc_back_edge_s) / 2.0, &lane_left_width,
       &lane_right_width);
   SLPoint stop_sl_point;
+  // 获取停止点的SL坐标
   reference_line_info.reference_line().XYToSL(stop_point, &stop_sl_point);
   // use distance to last stop point to determine if needed to check clear
-  // again
   if (adc_back_edge_s > stop_sl_point.s()) {
     if (adc_start_l > -lane_right_width || adc_end_l < lane_left_width) {
       return true;

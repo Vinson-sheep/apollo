@@ -45,6 +45,8 @@ bool Scenario::Init(std::shared_ptr<DependencyInjector> injector,
   name_ = name;
   injector_ = injector;
   // set scenario_type in PlanningContext
+
+  // 新建scenario对象
   auto* scenario = injector_->planning_context()
                        ->mutable_planning_status()
                        ->mutable_scenario();
@@ -54,9 +56,12 @@ bool Scenario::Init(std::shared_ptr<DependencyInjector> injector,
   // Generate the default config path.
   int status;
   // Get the name of this class.
+
+  // 获取scenario对象的实例名称
   std::string class_name =
       abi::__cxa_demangle(typeid(*this).name(), 0, 0, &status);
 
+  // 获取配置文件位置
   config_dir_ = apollo::cyber::plugin_manager::PluginManager::Instance()
                     ->GetPluginClassHomePath<Scenario>(class_name);
   config_dir_ += "/conf";
@@ -66,6 +71,7 @@ bool Scenario::Init(std::shared_ptr<DependencyInjector> injector,
                      ->GetPluginConfPath<Scenario>(class_name,
                                                    "conf/scenario_conf.pb.txt");
 
+  // 读取pipeline文件
   // Load the pipeline config.
   std::string pipeline_config_path =
       apollo::cyber::plugin_manager::PluginManager::Instance()
@@ -77,6 +83,8 @@ bool Scenario::Init(std::shared_ptr<DependencyInjector> injector,
     AERROR << "Load pipeline of " << name_ << " failed!";
     return false;
   }
+
+  // 将stage保存到stage_pipeline_map_
   for (const auto& stage : scenario_pipeline_config_.stage()) {
     stage_pipeline_map_[stage.name()] = &stage;
   }
@@ -85,6 +93,9 @@ bool Scenario::Init(std::shared_ptr<DependencyInjector> injector,
 
 ScenarioResult Scenario::Process(
     const common::TrajectoryPoint& planning_init_point, Frame* frame) {
+
+  // 如果stage不存在，手动创建stage
+  // 如果创建失败，返回error
   if (current_stage_ == nullptr) {
     current_stage_ = CreateStage(
         *stage_pipeline_map_[scenario_pipeline_config_.stage(0).name()]);
@@ -96,6 +107,8 @@ ScenarioResult Scenario::Process(
     }
     AINFO << "Create stage " << current_stage_->Name();
   }
+
+  // 如果stage为空，认为scanario已经完成，返回成功
   if (current_stage_->Name().empty()) {
     scenario_result_.SetScenarioStatus(ScenarioStatusType::STATUS_DONE);
     return scenario_result_;
@@ -114,21 +127,33 @@ ScenarioResult Scenario::Process(
       break;
     }
     case StageStatusType::FINISHED: {
+
+      // 获取下一个stage
       auto next_stage = current_stage_->NextStage();
+
+      // 如果stage切换
       if (next_stage != current_stage_->Name()) {
         AINFO << "switch stage from " << current_stage_->Name() << " to "
               << next_stage;
+
+        // 如果下一个stage为空，认为scenario已经完成
         if (next_stage.empty()) {
           scenario_result_.SetScenarioStatus(ScenarioStatusType::STATUS_DONE);
           return scenario_result_;
         }
+
+        // 如果next_stage不在列表内，报错
         if (stage_pipeline_map_.find(next_stage) == stage_pipeline_map_.end()) {
           AERROR << "Failed to find config for stage: " << next_stage;
           scenario_result_.SetScenarioStatus(
               ScenarioStatusType::STATUS_UNKNOWN);
           return scenario_result_;
         }
+
+        // 创建新的stage
         current_stage_ = CreateStage(*stage_pipeline_map_[next_stage]);
+
+        // 创建失败，返回异常
         if (current_stage_ == nullptr) {
           AWARN << "Current stage is a null pointer.";
           scenario_result_.SetScenarioStatus(
@@ -136,10 +161,14 @@ ScenarioResult Scenario::Process(
           return scenario_result_;
         }
       }
+
+      // 创建stage成功，scenario正在运行
       if (current_stage_ != nullptr && !current_stage_->Name().empty()) {
         scenario_result_.SetScenarioStatus(
             ScenarioStatusType::STATUS_PROCESSING);
-      } else {
+      } 
+      // 创建stage失败，scenario直接结束
+      else {
         scenario_result_.SetScenarioStatus(ScenarioStatusType::STATUS_DONE);
       }
       break;
@@ -155,10 +184,13 @@ ScenarioResult Scenario::Process(
 
 std::shared_ptr<Stage> Scenario::CreateStage(
     const StagePipeline& stage_pipeline) {
+  // 创建stage实例
   auto stage_ptr =
       apollo::cyber::plugin_manager::PluginManager::Instance()
           ->CreateInstance<Stage>(
               ConfigUtil::GetFullPlanningClassName(stage_pipeline.type()));
+
+  // 执行初始化函数
   if (nullptr == stage_ptr ||
       !stage_ptr->Init(stage_pipeline, injector_, config_dir_, GetContext())) {
     AERROR << "Create stage " << stage_pipeline.name() << " of " << name_

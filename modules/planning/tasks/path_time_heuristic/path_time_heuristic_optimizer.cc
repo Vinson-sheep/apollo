@@ -32,6 +32,7 @@ namespace planning {
 using apollo::common::ErrorCode;
 using apollo::common::Status;
 
+
 bool PathTimeHeuristicOptimizer::Init(
     const std::string& config_dir, const std::string& name,
     const std::shared_ptr<DependencyInjector>& injector) {
@@ -42,6 +43,9 @@ bool PathTimeHeuristicOptimizer::Init(
   return SpeedOptimizer::LoadConfig<SpeedHeuristicOptimizerConfig>(&config_);
 }
 
+
+// 基于动态规划算法，在非凸的ST空间做粗的速度规划。
+// 处理后的数据保存在reference_line_info_的st_graph_data_中。
 bool PathTimeHeuristicOptimizer::SearchPathTimeGraph(
     SpeedData* speed_data) const {
   const auto& dp_st_speed_optimizer_config =
@@ -49,10 +53,12 @@ bool PathTimeHeuristicOptimizer::SearchPathTimeGraph(
           ? config_.lane_change_speed_config()
           : config_.default_speed_config();
 
+  // 初始化st图
   GriddedPathTimeGraph st_graph(
       reference_line_info_->st_graph_data(), dp_st_speed_optimizer_config,
       reference_line_info_->path_decision()->obstacles().Items(), init_point_);
 
+  // 搜索速度
   if (!st_graph.Search(speed_data).ok()) {
     AERROR << "failed to search graph with dynamic programming.";
     return false;
@@ -65,12 +71,14 @@ Status PathTimeHeuristicOptimizer::Process(
     SpeedData* const speed_data) {
   init_point_ = init_point;
 
+  // 安全校验
   if (path_data.discretized_path().empty()) {
     const std::string msg = "Empty path data";
     AERROR << msg;
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
+  // 如果搜索失败，报错
   if (!SearchPathTimeGraph(speed_data)) {
     const std::string msg = absl::StrCat(
         Name(), ": Failed to search graph with dynamic programming.");
@@ -79,9 +87,9 @@ Status PathTimeHeuristicOptimizer::Process(
                                      ->mutable_st_graph_debug());
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
-  RecordDebugInfo(
-      *speed_data,
-      reference_line_info_->mutable_st_graph_data()->mutable_st_graph_debug());
+  // RecordDebugInfo(
+  //     *speed_data,
+  //     reference_line_info_->mutable_st_graph_data()->mutable_st_graph_debug());
   return Status::OK();
 }
 

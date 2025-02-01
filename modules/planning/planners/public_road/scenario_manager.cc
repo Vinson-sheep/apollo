@@ -58,19 +58,33 @@ bool ScenarioManager::Init(const std::shared_ptr<DependencyInjector>& injector,
 void ScenarioManager::Update(const common::TrajectoryPoint& ego_point,
                              Frame* frame) {
   CHECK_NOTNULL(frame);
+
+  // 遍历所有场景
+
+  // 高优先级的场景可以打断低优先级的场景
   for (auto scenario : scenario_list_) {
+    // 如果之前的场景正在运行，那么继续运行
     if (current_scenario_.get() == scenario.get() &&
         current_scenario_->GetStatus() ==
             ScenarioStatusType::STATUS_PROCESSING) {
       // The previous scenario has higher priority
       return;
     }
+    // 如果之前的场景已经结束，或者该场景优先级更高，且可切入
     if (scenario->IsTransferable(current_scenario_.get(), *frame)) {
+
+      // 退出之前的场景
       current_scenario_->Exit(frame);
       AINFO << "switch scenario from" << current_scenario_->Name() << " to "
             << scenario->Name();
+
+      // 切换到当前场景
       current_scenario_ = scenario;
+
+      // 重置
       current_scenario_->Reset();
+
+      // 切入
       current_scenario_->Enter(frame);
       return;
     }

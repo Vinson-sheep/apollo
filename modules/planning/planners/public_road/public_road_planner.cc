@@ -37,10 +37,14 @@ Status PublicRoadPlanner::Init(
   return Status::OK();
 }
 
+// 主要是调用scenario_manager_进行场景管理
 Status PublicRoadPlanner::Plan(const TrajectoryPoint& planning_start_point,
                                Frame* frame,
                                ADCTrajectory* ptr_computed_trajectory) {
+
+  // 第一次更新信息
   scenario_manager_.Update(planning_start_point, frame);
+
   scenario_ = scenario_manager_.mutable_scenario();
   if (!scenario_) {
     return Status(apollo::common::ErrorCode::PLANNING_ERROR,
@@ -48,18 +52,21 @@ Status PublicRoadPlanner::Plan(const TrajectoryPoint& planning_start_point,
   }
   auto result = scenario_->Process(planning_start_point, frame);
 
-  if (FLAGS_enable_record_debug) {
-    auto scenario_debug = ptr_computed_trajectory->mutable_debug()
-                              ->mutable_planning_data()
-                              ->mutable_scenario();
-    scenario_debug->set_scenario_plugin_type(scenario_->Name());
-    scenario_debug->set_stage_plugin_type(scenario_->GetStage());
-    scenario_debug->set_msg(scenario_->GetMsg());
-  }
+  // if (FLAGS_enable_record_debug) {
+  //   auto scenario_debug = ptr_computed_trajectory->mutable_debug()
+  //                             ->mutable_planning_data()
+  //                             ->mutable_scenario();
+  //   scenario_debug->set_scenario_plugin_type(scenario_->Name());
+  //   scenario_debug->set_stage_plugin_type(scenario_->GetStage());
+  //   scenario_debug->set_msg(scenario_->GetMsg());
+  // }
 
+  // 如果执行成功，第二次更新信息
   if (result.GetScenarioStatus() == ScenarioStatusType::STATUS_DONE) {
     // only updates scenario manager when previous scenario's status is
     // STATUS_DONE
+
+    // 切入新的scenario
     scenario_manager_.Update(planning_start_point, frame);
   } else if (result.GetScenarioStatus() == ScenarioStatusType::STATUS_UNKNOWN) {
     return Status(common::PLANNING_ERROR,

@@ -116,6 +116,7 @@ double DpStCost::GetObstacleCost(const StGraphPoint& st_graph_point) {
 
   double cost = 0.0;
 
+  // 如果s不合法，那么返回无穷
   if (FLAGS_use_st_drivable_boundary) {
     // TODO(Jiancheng): move to configs
     static constexpr double boundary_resolution = 0.1;
@@ -130,9 +131,12 @@ double DpStCost::GetObstacleCost(const StGraphPoint& st_graph_point) {
     }
   }
 
+  // 遍历所有障碍物
   for (const auto* obstacle : obstacles_) {
     // Not applying obstacle approaching cost to virtual obstacle like created
     // stop fences
+
+    // 忽略虚拟障碍物
     if (obstacle->IsVirtual()) {
       continue;
     }
@@ -140,12 +144,16 @@ double DpStCost::GetObstacleCost(const StGraphPoint& st_graph_point) {
     // Stop obstacles are assumed to have a safety margin when mapping them out,
     // so repelling force in dp st is not needed as it is designed to have adc
     // stop right at the stop distance we design in prior mapping process
+
+    // 忽略完全纵向的障碍物
     if (obstacle->LongitudinalDecision().has_stop()) {
       continue;
     }
 
+    // 提取障碍物边界
     auto boundary = obstacle->path_st_boundary();
 
+    // 忽略特殊情况
     if (boundary.min_s() > FLAGS_speed_lon_decision_horizon) {
       continue;
     }
@@ -155,6 +163,8 @@ double DpStCost::GetObstacleCost(const StGraphPoint& st_graph_point) {
     if (boundary.IsPointInBoundary(st_graph_point.point())) {
       return kInf;
     }
+
+    // 提取障碍物s边界
     double s_upper = 0.0;
     double s_lower = 0.0;
 
@@ -167,16 +177,22 @@ double DpStCost::GetObstacleCost(const StGraphPoint& st_graph_point) {
       s_upper = boundary_cost_[boundary_index][st_graph_point.index_t()].first;
       s_lower = boundary_cost_[boundary_index][st_graph_point.index_t()].second;
     }
+
+    // 如果车辆在障碍物后方
     if (s < s_lower) {
       const double follow_distance_s = config_.safe_distance();
       if (s + follow_distance_s < s_lower) {
         continue;
-      } else {
+      } 
+      // 如果在缓冲区内，cost = w * j * d * d
+      else {
         auto s_diff = follow_distance_s - s_lower + s;
         cost += config_.obstacle_weight() * config_.default_obstacle_cost() *
                 s_diff * s_diff;
       }
-    } else if (s > s_upper) {
+    } 
+    // 如果车辆在障碍物前方
+    else if (s > s_upper) {
       const double overtake_distance_s =
           StGapEstimator::EstimateSafeOvertakingGap();
       if (s > s_upper + overtake_distance_s) {  // or calculated from velocity

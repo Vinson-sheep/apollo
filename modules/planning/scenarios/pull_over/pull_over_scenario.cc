@@ -51,22 +51,31 @@ bool PullOverScenario::Init(std::shared_ptr<DependencyInjector> injector,
   init_ = true;
   return true;
 }
-
+// 靠边停车场景，如果参数配置 `enable_pull_over_at_destination` 设置为 `true`, 
+// 当车辆到达终点附近时，将自动切入 `PullOverScenario` 并完成靠边停车。
 bool PullOverScenario::IsTransferable(const Scenario* const other_scenario,
                                       const Frame& frame) {
+  
+  // 当前command为`lane_follow_command`
   if (!frame.local_view().planning_command->has_lane_follow_command()) {
     return false;
   }
+  // 参考线信息不为空
   if (other_scenario == nullptr || frame.reference_line_info().empty()) {
     return false;
   }
+  // `FLAGS_enable_pull_over_at_destination` 参数配置允许靠边停车场景
   if (!FLAGS_enable_pull_over_at_destination) {
     return false;
   }
+
+  // routing结果包含停止位置
   const auto routing_end = frame.local_view().end_lane_way_point;
   if (nullptr == routing_end) {
     return false;
   }
+
+  // 停止位置需要在当前车道
   common::SLPoint dest_sl;
   const auto& reference_line_info = frame.reference_line_info().front();
   const auto& reference_line = reference_line_info.reference_line();
@@ -74,13 +83,15 @@ bool PullOverScenario::IsTransferable(const Scenario* const other_scenario,
   if (!reference_line.IsOnLane(dest_sl)) {
     return false;
   }
+
+  // 计算车辆到目标位置的距离
   const double adc_front_edge_s = reference_line_info.AdcSlBoundary().end_s();
-
   const double adc_distance_to_dest = dest_sl.s() - adc_front_edge_s;
-  ADEBUG << "adc_distance_to_dest[" << adc_distance_to_dest
-         << "] destination_s[" << dest_sl.s() << "] adc_front_edge_s["
-         << adc_front_edge_s << "]";
+  // ADEBUG << "adc_distance_to_dest[" << adc_distance_to_dest
+  //        << "] destination_s[" << dest_sl.s() << "] adc_front_edge_s["
+  //        << adc_front_edge_s << "]";
 
+  // 
   bool pull_over_scenario =
       (frame.reference_line_info().size() == 1 &&  // NO, while changing lane
        adc_distance_to_dest >=
@@ -88,12 +99,15 @@ bool PullOverScenario::IsTransferable(const Scenario* const other_scenario,
        adc_distance_to_dest <=
            context_.scenario_config.start_pull_over_scenario_distance());
   // too close to destination + not found pull-over position
+  // 主车距离目标点满足靠边停车距离阈值
   if (pull_over_scenario) {
     if (adc_distance_to_dest <
         context_.scenario_config.max_distance_stop_search()) {
       pull_over_scenario = false;
     }
   }
+
+  // 不处于overlap
   // check around junction
   auto first_encountered_overlaps =
       frame.reference_line_info().front().FirstEncounteredOverlaps();
@@ -116,6 +130,7 @@ bool PullOverScenario::IsTransferable(const Scenario* const other_scenario,
     }
   }
 
+  // 最右侧车道允许靠边停车
   // check rightmost driving lane along pull-over path
   if (pull_over_scenario) {
     double check_s = adc_front_edge_s;
@@ -135,6 +150,8 @@ bool PullOverScenario::IsTransferable(const Scenario* const other_scenario,
 
       // check neighbor lanes type: NONE/CITY_DRIVING/BIKING/SIDEWALK/PARKING
       bool rightmost_driving_lane = true;
+
+      // 遍历右侧车道
       for (const auto& neighbor_lane_id :
            lane->lane().right_neighbor_forward_lane_id()) {
         const auto hdmap_ptr = HDMapUtil::BaseMapPtr();
@@ -147,9 +164,9 @@ bool PullOverScenario::IsTransferable(const Scenario* const other_scenario,
         }
         const auto& lane_type = neighbor_lane->lane().type();
         if (lane_type == hdmap::Lane::CITY_DRIVING) {
-          AWARN << "lane[" << lane_id << "]'s right neighbor forward lane["
-                << neighbor_lane_id.id() << "] type["
-                << Lane_LaneType_Name(lane_type) << "] can't pull over";
+          // AWARN << "lane[" << lane_id << "]'s right neighbor forward lane["
+          //       << neighbor_lane_id.id() << "] type["
+          //       << Lane_LaneType_Name(lane_type) << "] can't pull over";
           rightmost_driving_lane = false;
           break;
         }
