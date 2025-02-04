@@ -160,26 +160,26 @@ class GridSearch {
   };
   std::unordered_map<std::string, std::shared_ptr<Node2d>> dp_map_;
 
-  // park generic
- public:
-  explicit GridSearch(const WarmStartConfig& warm_start_conf);
-  double GetObstacleDistance(const double x, const double y);
+//   // park generic
+//  public:
+//   explicit GridSearch(const WarmStartConfig& warm_start_conf);
+//   double GetObstacleDistance(const double x, const double y);
 
- private:
-  void AddSoftCost(
-      const std::vector<std::vector<common::math::LineSegment2d>>&
-      soft_boundary);
-  void ExtendNode(
-      const int& x,
-      const int& y,
-      common::math::Vec2d origin_index,
-      std::unordered_set<std::string>& close_set);
-  std::vector<std::vector<common::math::LineSegment2d>>
-      soft_boundary_linesegments_vec_;
-  double esdf_range_ = 0.0;
-  bool use_esdf_ = false;
-  std::vector<int> dx_{1, 0, -1, 0};
-  std::vector<int> dy_{0, -1, 0, 1};
+//  private:
+  // void AddSoftCost(
+  //     const std::vector<std::vector<common::math::LineSegment2d>>&
+  //     soft_boundary);
+  // void ExtendNode(
+  //     const int& x,
+  //     const int& y,
+  //     common::math::Vec2d origin_index,
+  //     std::unordered_set<std::string>& close_set);
+  // std::vector<std::vector<common::math::LineSegment2d>>
+  //     soft_boundary_linesegments_vec_;
+  // double esdf_range_ = 0.0;
+  // bool use_esdf_ = false;
+  // std::vector<int> dx_{1, 0, -1, 0};
+  // std::vector<int> dy_{0, -1, 0, 1};
 };
 }  // namespace planning
 }  // namespace apollo

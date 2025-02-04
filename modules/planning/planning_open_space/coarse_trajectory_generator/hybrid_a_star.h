@@ -149,7 +149,7 @@ class HybridAStar {
 
   // park generic
  public:
-  explicit HybridAStar(const WarmStartConfig& open_space_conf);
+//   explicit HybridAStar(const WarmStartConfig& open_space_conf);
 
   bool Plan(
           double sx,
@@ -166,16 +166,16 @@ class HybridAStar {
               soft_boundary_vertices_vec = {},
           bool reeds_sheep_last_straight = false);
 
- private:
-  double GetSoftBoundaryCost(
-          const std::shared_ptr<ReedSheppPath>& reeds_shepp_to_end);
-  bool RSPLengthCheck(const std::shared_ptr<ReedSheppPath> reeds_shepp_path);
+//  private:
+//   double GetSoftBoundaryCost(
+//           const std::shared_ptr<ReedSheppPath>& reeds_shepp_to_end);
+//   bool RSPLengthCheck(const std::shared_ptr<ReedSheppPath> reeds_shepp_path);
 
-  WarmStartConfig planner_warm_start_config_;
-  std::vector<std::vector<common::math::LineSegment2d>>
-      soft_boundary_linesegments_vec_;
-  double traj_expected_shortest_length_ = 0.0;
-  double traj_short_length_penalty_ = 0.0;
+//   WarmStartConfig planner_warm_start_config_;
+//   std::vector<std::vector<common::math::LineSegment2d>>
+//       soft_boundary_linesegments_vec_;
+//   double traj_expected_shortest_length_ = 0.0;
+//   double traj_short_length_penalty_ = 0.0;
 };
 
 }  // namespace planning

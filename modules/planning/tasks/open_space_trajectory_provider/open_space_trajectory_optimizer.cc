@@ -59,6 +59,8 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
     const Eigen::MatrixXd& obstacles_A, const Eigen::MatrixXd& obstacles_b,
     const std::vector<std::vector<Vec2d>>& obstacles_vertices_vec,
     double* time_latency) {
+
+  // 安全性校验
   if (XYbounds.empty() || end_pose.empty() || obstacles_edges_num.cols() == 0 ||
       obstacles_A.cols() == 0 || obstacles_b.cols() == 0) {
     ADEBUG << "OpenSpaceTrajectoryOptimizer input data not ready";
@@ -68,6 +70,8 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
                   "OpenSpaceTrajectoryOptimizer input data not ready");
   }
   CHECK(!stitching_trajectory.empty());
+
+  // 判断初始规划点是否在终点附近，直接结束规划
   // Generate Stop trajectory if init point close to destination
   if (IsInitPointNearDestination(stitching_trajectory.back(), end_pose,
                                  rotate_angle, translate_origin)) {
@@ -83,6 +87,7 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
   // Initiate initial states
   stitching_trajectory_ = stitching_trajectory;
 
+  // 提取stitching_trajectory最后一个点作为规划的起始点
   // Init trajectory point is the stitching point from last trajectory
   const common::TrajectoryPoint trajectory_stitching_point =
       stitching_trajectory.back();
@@ -91,13 +96,13 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
   double init_x = trajectory_stitching_point.path_point().x();
   double init_y = trajectory_stitching_point.path_point().y();
   double init_phi = trajectory_stitching_point.path_point().theta();
-  AINFO << "origin_point: (" << std::setprecision(9) << translate_origin.x()
-        << "," << translate_origin.y() << ")";
-  AINFO << "origin_heading:" << std::setprecision(9) << rotate_angle << ",";
-  AINFO << "init_point: ( " << std::setprecision(9) << init_x << "," << init_y
-        << ")";
-  AINFO << "end_pose: (" << std::setprecision(9) << end_pose[0] << ","
-        << end_pose[1] << ")";
+  // AINFO << "origin_point: (" << std::setprecision(9) << translate_origin.x()
+  //       << "," << translate_origin.y() << ")";
+  // AINFO << "origin_heading:" << std::setprecision(9) << rotate_angle << ",";
+  // AINFO << "init_point: ( " << std::setprecision(9) << init_x << "," << init_y
+  //       << ")";
+  // AINFO << "end_pose: (" << std::setprecision(9) << end_pose[0] << ","
+  //       << end_pose[1] << ")";
 
   // Rotate and scale the state
   PathPointNormalizing(rotate_angle, translate_origin, &init_x, &init_y,
@@ -107,6 +112,7 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
   // now)
   HybridAStartResult result;
 
+  // 利用Hybrid A*和RS曲线搜索粗解
   if (warm_start_->Plan(init_x, init_y, init_phi, end_pose[0], end_pose[1],
                         end_pose[2], XYbounds, obstacles_vertices_vec,
                         &result)) {
@@ -262,14 +268,14 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
     }
   }
 
-  // record debug info
-  if (FLAGS_enable_record_debug) {
-    open_space_debug_.Clear();
-    RecordDebugInfo(trajectory_stitching_point, translate_origin, rotate_angle,
-                    end_pose, xWS, uWS, l_warm_up, n_warm_up, dual_l_result_ds,
-                    dual_n_result_ds, state_result_ds, control_result_ds,
-                    time_result_ds, XYbounds, obstacles_vertices_vec);
-  }
+  // // record debug info
+  // if (FLAGS_enable_record_debug) {
+  //   open_space_debug_.Clear();
+  //   RecordDebugInfo(trajectory_stitching_point, translate_origin, rotate_angle,
+  //                   end_pose, xWS, uWS, l_warm_up, n_warm_up, dual_l_result_ds,
+  //                   dual_n_result_ds, state_result_ds, control_result_ds,
+  //                   time_result_ds, XYbounds, obstacles_vertices_vec);
+  // }
 
   // rescale the states to the world frame
   size_t state_size = state_result_ds.cols();
@@ -290,157 +296,163 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
   return Status::OK();
 }
 
-void OpenSpaceTrajectoryOptimizer::RecordDebugInfo(
-    const common::TrajectoryPoint& trajectory_stitching_point,
-    const Vec2d& translate_origin, const double rotate_angle,
-    const std::vector<double>& end_pose, const Eigen::MatrixXd& xWS,
-    const Eigen::MatrixXd& uWS, const Eigen::MatrixXd& l_warm_up,
-    const Eigen::MatrixXd& n_warm_up, const Eigen::MatrixXd& dual_l_result_ds,
-    const Eigen::MatrixXd& dual_n_result_ds,
-    const Eigen::MatrixXd& state_result_ds,
-    const Eigen::MatrixXd& control_result_ds,
-    const Eigen::MatrixXd& time_result_ds, const std::vector<double>& XYbounds,
-    const std::vector<std::vector<Vec2d>>& obstacles_vertices_vec) {
-  // load information about trajectory stitching point
+// void OpenSpaceTrajectoryOptimizer::RecordDebugInfo(
+//     const common::TrajectoryPoint& trajectory_stitching_point,
+//     const Vec2d& translate_origin, const double rotate_angle,
+//     const std::vector<double>& end_pose, const Eigen::MatrixXd& xWS,
+//     const Eigen::MatrixXd& uWS, const Eigen::MatrixXd& l_warm_up,
+//     const Eigen::MatrixXd& n_warm_up, const Eigen::MatrixXd& dual_l_result_ds,
+//     const Eigen::MatrixXd& dual_n_result_ds,
+//     const Eigen::MatrixXd& state_result_ds,
+//     const Eigen::MatrixXd& control_result_ds,
+//     const Eigen::MatrixXd& time_result_ds, const std::vector<double>& XYbounds,
+//     const std::vector<std::vector<Vec2d>>& obstacles_vertices_vec) {
+//   // load information about trajectory stitching point
 
-  open_space_debug_.mutable_trajectory_stitching_point()->CopyFrom(
-      trajectory_stitching_point);
-  // load translation origin and heading angle
-  auto* roi_shift_point = open_space_debug_.mutable_roi_shift_point();
-  // pathpoint
-  roi_shift_point->mutable_path_point()->set_x(translate_origin.x());
-  roi_shift_point->mutable_path_point()->set_y(translate_origin.y());
-  roi_shift_point->mutable_path_point()->set_theta(rotate_angle);
+//   open_space_debug_.mutable_trajectory_stitching_point()->CopyFrom(
+//       trajectory_stitching_point);
+//   // load translation origin and heading angle
+//   auto* roi_shift_point = open_space_debug_.mutable_roi_shift_point();
+//   // pathpoint
+//   roi_shift_point->mutable_path_point()->set_x(translate_origin.x());
+//   roi_shift_point->mutable_path_point()->set_y(translate_origin.y());
+//   roi_shift_point->mutable_path_point()->set_theta(rotate_angle);
 
-  // load end_pose into debug
-  auto* end_point = open_space_debug_.mutable_end_point();
-  end_point->mutable_path_point()->set_x(end_pose[0]);
-  end_point->mutable_path_point()->set_y(end_pose[1]);
-  end_point->mutable_path_point()->set_theta(end_pose[2]);
-  end_point->set_v(end_pose[3]);
+//   // load end_pose into debug
+//   auto* end_point = open_space_debug_.mutable_end_point();
+//   end_point->mutable_path_point()->set_x(end_pose[0]);
+//   end_point->mutable_path_point()->set_y(end_pose[1]);
+//   end_point->mutable_path_point()->set_theta(end_pose[2]);
+//   end_point->set_v(end_pose[3]);
 
-  // load warm start trajectory
-  size_t horizon = xWS.cols() - 1;
-  auto* warm_start_trajectory =
-      open_space_debug_.mutable_warm_start_trajectory();
-  for (size_t i = 0; i < horizon; ++i) {
-    auto* warm_start_point = warm_start_trajectory->add_vehicle_motion_point();
-    warm_start_point->mutable_trajectory_point()->mutable_path_point()->set_x(
-        xWS(0, i));
-    warm_start_point->mutable_trajectory_point()->mutable_path_point()->set_y(
-        xWS(1, i));
-    warm_start_point->mutable_trajectory_point()
-        ->mutable_path_point()
-        ->set_theta(xWS(2, i));
-    warm_start_point->mutable_trajectory_point()->set_v(xWS(3, i));
-    warm_start_point->set_steer(uWS(0, i));
-    warm_start_point->mutable_trajectory_point()->set_a(uWS(1, i));
-  }
-  auto* warm_start_point = warm_start_trajectory->add_vehicle_motion_point();
-  warm_start_point->mutable_trajectory_point()->mutable_path_point()->set_x(
-      xWS(0, horizon));
-  warm_start_point->mutable_trajectory_point()->mutable_path_point()->set_y(
-      xWS(1, horizon));
-  warm_start_point->mutable_trajectory_point()->mutable_path_point()->set_theta(
-      xWS(2, horizon));
-  warm_start_point->mutable_trajectory_point()->set_v(xWS(3, horizon));
+//   // load warm start trajectory
+//   size_t horizon = xWS.cols() - 1;
+//   auto* warm_start_trajectory =
+//       open_space_debug_.mutable_warm_start_trajectory();
+//   for (size_t i = 0; i < horizon; ++i) {
+//     auto* warm_start_point = warm_start_trajectory->add_vehicle_motion_point();
+//     warm_start_point->mutable_trajectory_point()->mutable_path_point()->set_x(
+//         xWS(0, i));
+//     warm_start_point->mutable_trajectory_point()->mutable_path_point()->set_y(
+//         xWS(1, i));
+//     warm_start_point->mutable_trajectory_point()
+//         ->mutable_path_point()
+//         ->set_theta(xWS(2, i));
+//     warm_start_point->mutable_trajectory_point()->set_v(xWS(3, i));
+//     warm_start_point->set_steer(uWS(0, i));
+//     warm_start_point->mutable_trajectory_point()->set_a(uWS(1, i));
+//   }
+//   auto* warm_start_point = warm_start_trajectory->add_vehicle_motion_point();
+//   warm_start_point->mutable_trajectory_point()->mutable_path_point()->set_x(
+//       xWS(0, horizon));
+//   warm_start_point->mutable_trajectory_point()->mutable_path_point()->set_y(
+//       xWS(1, horizon));
+//   warm_start_point->mutable_trajectory_point()->mutable_path_point()->set_theta(
+//       xWS(2, horizon));
+//   warm_start_point->mutable_trajectory_point()->set_v(xWS(3, horizon));
 
-  // load warm start dual variables
-  size_t l_warm_up_rows = l_warm_up.rows();
-  for (size_t i = 0; i < horizon; ++i) {
-    for (size_t j = 0; j < l_warm_up_rows; j++) {
-      open_space_debug_.add_warm_start_dual_lambda(l_warm_up(j, i));
-    }
-  }
-  size_t n_warm_up_rows = n_warm_up.rows();
-  for (size_t i = 0; i < horizon; ++i) {
-    for (size_t j = 0; j < n_warm_up_rows; j++) {
-      open_space_debug_.add_warm_start_dual_miu(n_warm_up(j, i));
-    }
-  }
+//   // load warm start dual variables
+//   size_t l_warm_up_rows = l_warm_up.rows();
+//   for (size_t i = 0; i < horizon; ++i) {
+//     for (size_t j = 0; j < l_warm_up_rows; j++) {
+//       open_space_debug_.add_warm_start_dual_lambda(l_warm_up(j, i));
+//     }
+//   }
+//   size_t n_warm_up_rows = n_warm_up.rows();
+//   for (size_t i = 0; i < horizon; ++i) {
+//     for (size_t j = 0; j < n_warm_up_rows; j++) {
+//       open_space_debug_.add_warm_start_dual_miu(n_warm_up(j, i));
+//     }
+//   }
 
-  // load optimized dual variables
-  size_t dual_l_result_ds_rows = dual_l_result_ds.rows();
-  for (size_t i = 0; i < horizon; ++i) {
-    for (size_t j = 0; j < dual_l_result_ds_rows; j++) {
-      open_space_debug_.add_optimized_dual_lambda(dual_l_result_ds(j, i));
-    }
-  }
-  size_t dual_n_result_ds_rows = dual_n_result_ds.rows();
-  for (size_t i = 0; i < horizon; ++i) {
-    for (size_t j = 0; j < dual_n_result_ds_rows; j++) {
-      open_space_debug_.add_optimized_dual_miu(dual_n_result_ds(j, i));
-    }
-  }
+//   // load optimized dual variables
+//   size_t dual_l_result_ds_rows = dual_l_result_ds.rows();
+//   for (size_t i = 0; i < horizon; ++i) {
+//     for (size_t j = 0; j < dual_l_result_ds_rows; j++) {
+//       open_space_debug_.add_optimized_dual_lambda(dual_l_result_ds(j, i));
+//     }
+//   }
+//   size_t dual_n_result_ds_rows = dual_n_result_ds.rows();
+//   for (size_t i = 0; i < horizon; ++i) {
+//     for (size_t j = 0; j < dual_n_result_ds_rows; j++) {
+//       open_space_debug_.add_optimized_dual_miu(dual_n_result_ds(j, i));
+//     }
+//   }
 
-  double relative_time = 0;
+//   double relative_time = 0;
 
-  // load smoothed trajectory
-  horizon = state_result_ds.cols() - 1;
-  auto* smoothed_trajectory = open_space_debug_.mutable_smoothed_trajectory();
-  for (size_t i = 0; i < horizon; ++i) {
-    auto* smoothed_point = smoothed_trajectory->add_vehicle_motion_point();
-    smoothed_point->mutable_trajectory_point()->mutable_path_point()->set_x(
-        state_result_ds(0, i));
-    smoothed_point->mutable_trajectory_point()->mutable_path_point()->set_y(
-        state_result_ds(1, i));
-    smoothed_point->mutable_trajectory_point()->mutable_path_point()->set_theta(
-        state_result_ds(2, i));
-    smoothed_point->mutable_trajectory_point()->set_v(state_result_ds(3, i));
-    smoothed_point->set_steer(control_result_ds(0, i));
-    smoothed_point->mutable_trajectory_point()->set_a(control_result_ds(1, i));
-    relative_time += time_result_ds(0, i);
-    smoothed_point->mutable_trajectory_point()->set_relative_time(
-        relative_time);
-  }
-  auto* smoothed_point = smoothed_trajectory->add_vehicle_motion_point();
-  smoothed_point->mutable_trajectory_point()->mutable_path_point()->set_x(
-      state_result_ds(0, horizon));
-  smoothed_point->mutable_trajectory_point()->mutable_path_point()->set_y(
-      state_result_ds(1, horizon));
-  smoothed_point->mutable_trajectory_point()->mutable_path_point()->set_theta(
-      state_result_ds(2, horizon));
-  smoothed_point->mutable_trajectory_point()->set_v(
-      state_result_ds(3, horizon));
+//   // load smoothed trajectory
+//   horizon = state_result_ds.cols() - 1;
+//   auto* smoothed_trajectory = open_space_debug_.mutable_smoothed_trajectory();
+//   for (size_t i = 0; i < horizon; ++i) {
+//     auto* smoothed_point = smoothed_trajectory->add_vehicle_motion_point();
+//     smoothed_point->mutable_trajectory_point()->mutable_path_point()->set_x(
+//         state_result_ds(0, i));
+//     smoothed_point->mutable_trajectory_point()->mutable_path_point()->set_y(
+//         state_result_ds(1, i));
+//     smoothed_point->mutable_trajectory_point()->mutable_path_point()->set_theta(
+//         state_result_ds(2, i));
+//     smoothed_point->mutable_trajectory_point()->set_v(state_result_ds(3, i));
+//     smoothed_point->set_steer(control_result_ds(0, i));
+//     smoothed_point->mutable_trajectory_point()->set_a(control_result_ds(1, i));
+//     relative_time += time_result_ds(0, i);
+//     smoothed_point->mutable_trajectory_point()->set_relative_time(
+//         relative_time);
+//   }
+//   auto* smoothed_point = smoothed_trajectory->add_vehicle_motion_point();
+//   smoothed_point->mutable_trajectory_point()->mutable_path_point()->set_x(
+//       state_result_ds(0, horizon));
+//   smoothed_point->mutable_trajectory_point()->mutable_path_point()->set_y(
+//       state_result_ds(1, horizon));
+//   smoothed_point->mutable_trajectory_point()->mutable_path_point()->set_theta(
+//       state_result_ds(2, horizon));
+//   smoothed_point->mutable_trajectory_point()->set_v(
+//       state_result_ds(3, horizon));
 
-  // load xy boundary (xmin, xmax, ymin, ymax)
-  open_space_debug_.add_xy_boundary(XYbounds[0]);
-  open_space_debug_.add_xy_boundary(XYbounds[1]);
-  open_space_debug_.add_xy_boundary(XYbounds[2]);
-  open_space_debug_.add_xy_boundary(XYbounds[3]);
+//   // load xy boundary (xmin, xmax, ymin, ymax)
+//   open_space_debug_.add_xy_boundary(XYbounds[0]);
+//   open_space_debug_.add_xy_boundary(XYbounds[1]);
+//   open_space_debug_.add_xy_boundary(XYbounds[2]);
+//   open_space_debug_.add_xy_boundary(XYbounds[3]);
 
-  // load obstacles
-  for (const auto& obstacle_vertices : obstacles_vertices_vec) {
-    auto* obstacle_ptr = open_space_debug_.add_obstacles();
-    for (const auto& vertex : obstacle_vertices) {
-      obstacle_ptr->add_vertices_x_coords(vertex.x());
-      obstacle_ptr->add_vertices_y_coords(vertex.y());
-    }
-  }
-}
+//   // load obstacles
+//   for (const auto& obstacle_vertices : obstacles_vertices_vec) {
+//     auto* obstacle_ptr = open_space_debug_.add_obstacles();
+//     for (const auto& vertex : obstacle_vertices) {
+//       obstacle_ptr->add_vertices_x_coords(vertex.x());
+//       obstacle_ptr->add_vertices_y_coords(vertex.y());
+//     }
+//   }
+// }
 
-void OpenSpaceTrajectoryOptimizer::UpdateDebugInfo(
-    planning_internal::OpenSpaceDebug* open_space_debug) {
-  open_space_debug->MergeFrom(open_space_debug_);
-}
+// void OpenSpaceTrajectoryOptimizer::UpdateDebugInfo(
+//     planning_internal::OpenSpaceDebug* open_space_debug) {
+//   open_space_debug->MergeFrom(open_space_debug_);
+// }
 
+// 判断初始规划点是否在终点附近
 bool OpenSpaceTrajectoryOptimizer::IsInitPointNearDestination(
     const common::TrajectoryPoint& planning_init_point,
     const std::vector<double>& end_pose, double rotate_angle,
     const Vec2d& translate_origin) {
   CHECK_EQ(end_pose.size(), 4U);
+
+  // 将end_pose转换到世界坐标系
   Vec2d end_pose_to_world_frame = Vec2d(end_pose[0], end_pose[1]);
 
   end_pose_to_world_frame.SelfRotate(rotate_angle);
   end_pose_to_world_frame += translate_origin;
 
   const common::PathPoint path_point = planning_init_point.path_point();
+
+  // 计算planning_init_point和end_pose_to_world_frame的欧氏距离
   double distance_to_init_point =
       std::sqrt((path_point.x() - end_pose_to_world_frame.x()) *
                     (path_point.x() - end_pose_to_world_frame.x()) +
                 (path_point.y() - end_pose_to_world_frame.y()) *
                     (path_point.y() - end_pose_to_world_frame.y()));
 
+  // 如果距离小于阈值，返回true
   if (distance_to_init_point <
       config_.planner_open_space_config().near_destination_threshold()) {
     return true;

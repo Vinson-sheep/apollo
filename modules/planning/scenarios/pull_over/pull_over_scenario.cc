@@ -181,11 +181,14 @@ bool PullOverScenario::IsTransferable(const Scenario* const other_scenario,
 }
 
 bool PullOverScenario::Exit(Frame* frame) {
+  // 清除当前状态pull_over
   injector_->planning_context()->mutable_planning_status()->clear_pull_over();
   return true;
 }
 
 bool PullOverScenario::Enter(Frame* frame) {
+
+  // 设置当前状态为pull_over
   auto* pull_over = injector_->planning_context()
                         ->mutable_planning_status()
                         ->mutable_pull_over();

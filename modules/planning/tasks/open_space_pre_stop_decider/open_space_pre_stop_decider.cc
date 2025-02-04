@@ -96,6 +96,7 @@ Status OpenSpacePreStopDecider::Process(
 bool OpenSpacePreStopDecider::CheckPullOverPreStop(
     Frame* const frame, ReferenceLineInfo* const reference_line_info,
     double* target_s) {
+  // 提取pull_over_status中的停止点sl坐标，赋值到target_s
   *target_s = 0.0;
   const auto& pull_over_status =
       injector_->planning_context()->planning_status().pull_over();
@@ -212,21 +213,36 @@ void OpenSpacePreStopDecider::SetPullOverStopFence(
   double static_linear_velocity_epsilon = 1.0e-2;
   CHECK_GE(stop_distance_to_target, 1.0e-8);
   double target_vehicle_offset = target_s - adc_front_edge_s;
+
+  // 如果停车距离在阈值之内，在阈值位置前插入虚拟障碍物
   if (target_vehicle_offset > stop_distance_to_target) {
     stop_line_s = target_s - stop_distance_to_target;
-  } else {
+
+  } 
+  // 否则
+  else {
+    // 如果第一次进入，设置flag
     if (!frame->open_space_info().pre_stop_rightaway_flag()) {
       // TODO(Jinyun) Use constant comfortable deacceleration rather than
       // distance by config to set stop fence
       stop_line_s = adc_front_edge_s + config_.rightaway_stop_distance();
+
+      // 如果速度已经为零，直接在车辆前方插入fence
       if (std::abs(vehicle_state.linear_velocity()) <
           static_linear_velocity_epsilon) {
         stop_line_s = adc_front_edge_s;
       }
+
+      // 往frame中插入fence位置
       *(frame->mutable_open_space_info()->mutable_pre_stop_rightaway_point()) =
           nearby_path.GetSmoothPoint(stop_line_s);
+
       frame->mutable_open_space_info()->set_pre_stop_rightaway_flag(true);
-    } else {
+    } 
+    // 第N次进入
+    else {
+
+      // 直接提取停止点sl坐标
       double stop_point_s = 0.0;
       double stop_point_l = 0.0;
       nearby_path.GetNearestPoint(
@@ -236,6 +252,7 @@ void OpenSpacePreStopDecider::SetPullOverStopFence(
     }
   }
 
+  // 在前方stop_line_s位置建立停止墙
   const std::string stop_wall_id = OPEN_SPACE_STOP_ID;
   std::vector<std::string> wait_for_obstacles;
   frame->mutable_open_space_info()->set_open_space_pre_stop_fence_s(

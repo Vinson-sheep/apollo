@@ -148,19 +148,19 @@ class Node3d {
   // travel distance in direction_
   double travel_distance_ = 0.0;
 
-  // park generic
- public:
-  Node3d(const double x,
-          const double y,
-          const double phi,
-          const std::vector<double>& XYbounds,
-          const WarmStartConfig& warm_start_conf);
+//   // park generic
+//  public:
+//   Node3d(const double x,
+//           const double y,
+//           const double phi,
+//           const std::vector<double>& XYbounds,
+//           const WarmStartConfig& warm_start_conf);
 
-  Node3d(const std::vector<double>& traversed_x,
-          const std::vector<double>& traversed_y,
-          const std::vector<double>& traversed_phi,
-          const std::vector<double>& XYbounds,
-          const WarmStartConfig& warm_start_conf);
+//   Node3d(const std::vector<double>& traversed_x,
+//           const std::vector<double>& traversed_y,
+//           const std::vector<double>& traversed_phi,
+//           const std::vector<double>& XYbounds,
+//           const WarmStartConfig& warm_start_conf);
 };
 
 }  // namespace planning

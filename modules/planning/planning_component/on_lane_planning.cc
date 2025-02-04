@@ -412,7 +412,6 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
   
   // 交通决策信息，对每条参考线做处理
   // 可以查看traffic_rules下的交通决策
-  // 本质上是对轨迹
   for (auto& ref_line_info : *frame_->mutable_reference_line_info()) {
     // 交通决策执行函数
     auto traffic_status =
@@ -598,29 +597,39 @@ Status OnLanePlanning::Plan(
     const double current_time_stamp,
     const std::vector<TrajectoryPoint>& stitching_trajectory,
     ADCTrajectory* const ptr_trajectory_pb) {
-  auto* ptr_debug = ptr_trajectory_pb->mutable_debug();
-  if (FLAGS_enable_record_debug) {
-    ptr_debug->mutable_planning_data()->mutable_init_point()->CopyFrom(
-        stitching_trajectory.back());
-    frame_->mutable_open_space_info()->set_debug(ptr_debug);
-    frame_->mutable_open_space_info()->sync_debug_instance();
-  }
+
+  // auto* ptr_debug = ptr_trajectory_pb->mutable_debug();
+  // if (FLAGS_enable_record_debug) {
+  //   ptr_debug->mutable_planning_data()->mutable_init_point()->CopyFrom(
+  //       stitching_trajectory.back());
+  //   frame_->mutable_open_space_info()->set_debug(ptr_debug);
+  //   frame_->mutable_open_space_info()->sync_debug_instance();
+  // }
 
   auto status = planner_->Plan(stitching_trajectory.back(), frame_.get(),
                                ptr_trajectory_pb);
 
-  ptr_debug->mutable_planning_data()->set_front_clear_distance(
-      injector_->ego_info()->front_clear_distance());
+  // ptr_debug->mutable_planning_data()->set_front_clear_distance(
+  //     injector_->ego_info()->front_clear_distance());
 
+  // 如果是open_space规划器
   if (frame_->open_space_info().is_on_open_space_trajectory()) {
+
+    // 提取轨迹和档位
     frame_->mutable_open_space_info()->sync_debug_instance();
     const auto& publishable_trajectory =
         frame_->open_space_info().publishable_trajectory_data().first;
     const auto& publishable_trajectory_gear =
         frame_->open_space_info().publishable_trajectory_data().second;
+
+    
     const auto& trajectory_type = frame_->open_space_info().trajectory_type();
     const auto& is_collision = frame_->open_space_info().is_collision();
+
+    // 发布轨迹
     publishable_trajectory.PopulateTrajectoryProtobuf(ptr_trajectory_pb);
+
+    // 为什么是先发布轨迹再赋值？
     ptr_trajectory_pb->set_gear(publishable_trajectory_gear);
     ptr_trajectory_pb->set_trajectory_type(trajectory_type);
     ptr_trajectory_pb->set_is_collision(is_collision);
@@ -628,6 +637,7 @@ Status OnLanePlanning::Plan(
     auto* engage_advice = ptr_trajectory_pb->mutable_engage_advice();
 
     // enable start auto from open_space planner.
+    // 此处可能只是书写一些debug信息
     if (injector_->vehicle_state()->vehicle_state().driving_mode() !=
         Chassis::DrivingMode::Chassis_DrivingMode_COMPLETE_AUTO_DRIVE) {
       engage_advice->set_advice(EngageAdvice::READY_TO_ENGAGE);
@@ -637,7 +647,10 @@ Status OnLanePlanning::Plan(
       engage_advice->set_advice(EngageAdvice::KEEP_ENGAGED);
       engage_advice->set_reason("Keep engage while in parking");
     }
+
     // TODO(QiL): refine the export decision in open space info
+
+    // 这里设计不合理，open_space只为parking服务，没有进一步抽象
     ptr_trajectory_pb->mutable_decision()
         ->mutable_main_decision()
         ->mutable_parking()
@@ -652,9 +665,16 @@ Status OnLanePlanning::Plan(
     //   ExportOpenSpaceChart(ptr_trajectory_pb->debug(), *ptr_trajectory_pb,
     //                        ptr_debug);
     // }
-  } else {
+  } 
+  // 如果是public_road规划器
+  else {
+
+    // 寻找代价最小的参考线轨迹
     const auto* best_ref_info = frame_->FindDriveReferenceLineInfo();
+    // 寻找处于变道的参考线轨迹
     const auto* target_ref_info = frame_->FindTargetReferenceLineInfo();
+
+    // 如果没有代价最小轨迹，说明规划失败
     if (!best_ref_info) {
       const std::string msg = "planner failed to make a driving plan";
       AERROR << msg;
@@ -663,8 +683,12 @@ Status OnLanePlanning::Plan(
       }
       return Status(ErrorCode::PLANNING_ERROR, msg);
     }
+
+
     // Store current frame stitched path for possible speed fallback in next
     // frames
+
+    // 将轨迹进行拼接，保存再frame_中
     DiscretizedPath current_frame_planned_path;
     for (const auto& trajectory_point : stitching_trajectory) {
       current_frame_planned_path.push_back(trajectory_point.path_point());
@@ -674,7 +698,7 @@ Status OnLanePlanning::Plan(
               std::back_inserter(current_frame_planned_path));
     frame_->set_current_frame_planned_path(current_frame_planned_path);
 
-    ptr_debug->MergeFrom(best_ref_info->debug());
+    // ptr_debug->MergeFrom(best_ref_info->debug());
     // if (FLAGS_export_chart) {
     //   ExportOnLaneChart(best_ref_info->debug(), ptr_debug);
     // } else {
@@ -685,6 +709,8 @@ Status OnLanePlanning::Plan(
     //   //   ExportFailedLaneChangeSTChart(failed_ref_info->debug(), ptr_debug);
     //   // }
     // }
+
+    // 设置一些参数
     ptr_trajectory_pb->mutable_latency_stats()->MergeFrom(
         best_ref_info->latency_stats());
     // set right of way status
@@ -708,54 +734,57 @@ Status OnLanePlanning::Plan(
     best_ref_info->ExportDecision(ptr_trajectory_pb->mutable_decision(),
                                   injector_->planning_context());
 
-    // Add debug information.
-    if (FLAGS_enable_record_debug) {
-      auto* reference_line = ptr_debug->mutable_planning_data()->add_path();
-      reference_line->set_name("planning_reference_line");
-      const auto& reference_points =
-          best_ref_info->reference_line().reference_points();
-      double s = 0.0;
-      double prev_x = 0.0;
-      double prev_y = 0.0;
-      bool empty_path = true;
-      for (const auto& reference_point : reference_points) {
-        auto* path_point = reference_line->add_path_point();
-        path_point->set_x(reference_point.x());
-        path_point->set_y(reference_point.y());
-        path_point->set_theta(reference_point.heading());
-        path_point->set_kappa(reference_point.kappa());
-        path_point->set_dkappa(reference_point.dkappa());
-        if (empty_path) {
-          path_point->set_s(0.0);
-          empty_path = false;
-        } else {
-          double dx = reference_point.x() - prev_x;
-          double dy = reference_point.y() - prev_y;
-          s += std::hypot(dx, dy);
-          path_point->set_s(s);
-        }
-        prev_x = reference_point.x();
-        prev_y = reference_point.y();
-      }
-    }
+    // // Add debug information.
+    // if (FLAGS_enable_record_debug) {
+    //   auto* reference_line = ptr_debug->mutable_planning_data()->add_path();
+    //   reference_line->set_name("planning_reference_line");
+    //   const auto& reference_points =
+    //       best_ref_info->reference_line().reference_points();
+    //   double s = 0.0;
+    //   double prev_x = 0.0;
+    //   double prev_y = 0.0;
+    //   bool empty_path = true;
+    //   for (const auto& reference_point : reference_points) {
+    //     auto* path_point = reference_line->add_path_point();
+    //     path_point->set_x(reference_point.x());
+    //     path_point->set_y(reference_point.y());
+    //     path_point->set_theta(reference_point.heading());
+    //     path_point->set_kappa(reference_point.kappa());
+    //     path_point->set_dkappa(reference_point.dkappa());
+    //     if (empty_path) {
+    //       path_point->set_s(0.0);
+    //       empty_path = false;
+    //     } else {
+    //       double dx = reference_point.x() - prev_x;
+    //       double dy = reference_point.y() - prev_y;
+    //       s += std::hypot(dx, dy);
+    //       path_point->set_s(s);
+    //     }
+    //     prev_x = reference_point.x();
+    //     prev_y = reference_point.y();
+    //   }
+    // }
 
     last_publishable_trajectory_.reset(new PublishableTrajectory(
         current_time_stamp, best_ref_info->trajectory()));
-    PrintCurves debug_traj;
-    for (size_t i = 0; i < last_publishable_trajectory_->size(); i++) {
-      auto& traj_pt = last_publishable_trajectory_->at(i);
-      debug_traj.AddPoint("traj_sv", traj_pt.path_point().s(), traj_pt.v());
-      debug_traj.AddPoint("traj_sa", traj_pt.path_point().s(), traj_pt.a());
-      debug_traj.AddPoint("traj_sk", traj_pt.path_point().s(),
-                          traj_pt.path_point().kappa());
-    }
-    // debug_traj.PrintToLog();
-    ADEBUG << "current_time_stamp: " << current_time_stamp;
 
+    // PrintCurves debug_traj;
+    // for (size_t i = 0; i < last_publishable_trajectory_->size(); i++) {
+    //   auto& traj_pt = last_publishable_trajectory_->at(i);
+    //   debug_traj.AddPoint("traj_sv", traj_pt.path_point().s(), traj_pt.v());
+    //   debug_traj.AddPoint("traj_sa", traj_pt.path_point().s(), traj_pt.a());
+    //   debug_traj.AddPoint("traj_sk", traj_pt.path_point().s(),
+    //                       traj_pt.path_point().kappa());
+    // }
+    // debug_traj.PrintToLog();
+    // ADEBUG << "current_time_stamp: " << current_time_stamp;
+
+    // 插入之前的一段轨迹
     last_publishable_trajectory_->PrependTrajectoryPoints(
         std::vector<TrajectoryPoint>(stitching_trajectory.begin(),
                                      stitching_trajectory.end() - 1));
 
+    // 发布轨迹
     last_publishable_trajectory_->PopulateTrajectoryProtobuf(ptr_trajectory_pb);
 
     best_ref_info->ExportEngageAdvice(

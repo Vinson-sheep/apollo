@@ -64,25 +64,41 @@ bool OpenSpaceFallbackDecider::QuardraticFormulaLowerSolution(const double a,
   return true;
 }
 
+// 检测开放空间下轨迹是否与障碍物发生碰撞并做出相应策略。
 Status OpenSpaceFallbackDecider::Process(Frame* frame) {
+
   std::vector<std::vector<common::math::Box2d>> predicted_bounding_rectangles;
   size_t first_collision_index = 0;
   size_t fallback_start_index = 0;
+  
+  // 如果之前执行process检测出与障碍物有碰撞，直接返回
   if (frame_->open_space_info().fallback_flag()) {
     AINFO << "has got fallback decider, skip";
     return Status::OK();
   }
+
+  // 根据预测输入的障碍物信息，构建出不同时间间隔的障碍物边界，
+  // 将障碍物信息输入到`predicted_bounding_rectangles`中。
   BuildPredictedEnvironment(frame->obstacles(), predicted_bounding_rectangles);
   ADEBUG << "Numbers of obstsacles are: " << frame->obstacles().size();
   ADEBUG << "Numbers of predicted bounding rectangles are: "
          << predicted_bounding_rectangles[0].size()
          << " and : " << predicted_bounding_rectangles.size();
+
+  // 判断自车轨迹与障碍物轨迹是否没有碰撞，当返回为false，
+  // 根据碰撞点位置，生成匀减速停车轨迹，使车辆停车。
+
+  // 如果发生碰撞
   if (!IsCollisionFreeTrajectory(
           frame->open_space_info().chosen_partitioned_trajectory(),
           predicted_bounding_rectangles, &fallback_start_index,
           &first_collision_index)) {
+
+    // 要求停止
     // change flag
     frame_->mutable_open_space_info()->set_stop_flag(true);
+
+    // 产生停车轨迹
 
     // generate fallback trajectory base on current partition trajectory
     // vehicle speed is decreased to zero inside safety distance
@@ -96,6 +112,7 @@ Status OpenSpaceFallbackDecider::Process(Frame* frame) {
     // Fallback starts from current location but with vehicle velocity
     auto fallback_start_point =
         fallback_trajectory_pair_candidate.first[fallback_start_index];
+
     const auto& vehicle_state = injector_->vehicle_state()->vehicle_state();
     fallback_start_point.set_v(vehicle_state.linear_velocity());
 
@@ -154,8 +171,8 @@ Status OpenSpaceFallbackDecider::Process(Frame* frame) {
       }
     }
 
-    ADEBUG << "stop index before is: " << stop_index
-           << "; fallback_start index before is: " << fallback_start_index;
+    // ADEBUG << "stop index before is: " << stop_index
+    //        << "; fallback_start index before is: " << fallback_start_index;
 
     for (size_t i = 0; i < fallback_start_index; ++i) {
       fallback_trajectory_pair_candidate.first[i].set_v(
@@ -198,12 +215,12 @@ Status OpenSpaceFallbackDecider::Process(Frame* frame) {
       return Status::OK();
     }
 
-    ADEBUG << "before change, size : "
-           << fallback_trajectory_pair_candidate.first.size()
-           << ", first index information : "
-           << fallback_trajectory_pair_candidate.first[0].DebugString()
-           << ", second index information : "
-           << fallback_trajectory_pair_candidate.first[1].DebugString();
+    // ADEBUG << "before change, size : "
+    //        << fallback_trajectory_pair_candidate.first.size()
+    //        << ", first index information : "
+    //        << fallback_trajectory_pair_candidate.first[0].DebugString()
+    //        << ", second index information : "
+    //        << fallback_trajectory_pair_candidate.first[1].DebugString();
 
     // If stop_index > fallback_start_index
 
@@ -251,11 +268,11 @@ Status OpenSpaceFallbackDecider::Process(Frame* frame) {
       }
     }
 
-    ADEBUG << "fallback start point after changes: "
-           << fallback_start_point.DebugString();
+    // ADEBUG << "fallback start point after changes: "
+    //        << fallback_start_point.DebugString();
 
-    ADEBUG << "stop index: " << stop_index;
-    ADEBUG << "fallback start index: " << fallback_start_index;
+    // ADEBUG << "stop index: " << stop_index;
+    // ADEBUG << "fallback start index: " << fallback_start_index;
 
     // 2. Erase afterwards
     fallback_trajectory_pair_candidate.first.erase(
@@ -279,6 +296,8 @@ Status OpenSpaceFallbackDecider::Process(Frame* frame) {
     frame_->mutable_open_space_info()->set_stop_flag(false);
   }
 
+  // 判断车辆扩展后的box与静态障碍物是否有碰撞，当返回为false，车辆急刹并置fallback_flag为true，
+  // 从而在task `OpenSpaceTrajectoryProvider`中重新规划轨迹。
   if (!IsCollisionFreeEgoBox()) {
     double relative_time = 0.0;
     // TODO(Jinyun) Move to conf
@@ -313,16 +332,26 @@ Status OpenSpaceFallbackDecider::Process(Frame* frame) {
   return Status::OK();
 }
 
+// 根据预测输入的障碍物信息，构建出不同时间间隔的障碍物边界，
+// 将障碍物信息输入到`predicted_bounding_rectangles`中。
 void OpenSpaceFallbackDecider::BuildPredictedEnvironment(
     const std::vector<const Obstacle*>& obstacles,
     std::vector<std::vector<common::math::Box2d>>&
         predicted_bounding_rectangles) {
   predicted_bounding_rectangles.clear();
+
+  // 遍历时间
   double relative_time = 0.0;
   while (relative_time < config_.open_space_prediction_time_period()) {
     std::vector<Box2d> predicted_env;
+
+    // 遍历所有障碍物
     for (const Obstacle* obstacle : obstacles) {
+
+      // 忽略虚拟障碍物
       if (!obstacle->IsVirtual()) {
+        
+        // 提取障碍物box
         TrajectoryPoint point = obstacle->GetPointAtTime(relative_time);
         Box2d box = obstacle->GetBoundingBox(point);
         predicted_env.push_back(std::move(box));
@@ -378,16 +407,23 @@ bool OpenSpaceFallbackDecider::IsCollisionFreeTrajectory(
         predicted_bounding_rectangles,
     size_t* current_index, size_t* first_collision_index) {
   // prediction time resolution: FLAGS_trajectory_time_resolution
+
+  // 提取自车参数
   const auto& vehicle_config =
       common::VehicleConfigHelper::Instance()->GetConfig();
   double ego_length = vehicle_config.vehicle_param().length();
   double ego_width = vehicle_config.vehicle_param().width();
+
+  // 提取自车轨迹
   auto trajectory_pb = trajectory_gear_pair.first;
+
   const size_t point_size = trajectory_pb.NumOfPoints();
 
   *current_index = trajectory_pb.QueryLowerBoundPoint(0.0);
 
   for (size_t i = *current_index; i < point_size; ++i) {
+
+    // 提取当前时间的自车box
     const auto& trajectory_point = trajectory_pb.TrajectoryPointAt(i);
     double ego_theta = trajectory_point.path_point().theta();
     Box2d ego_box(
@@ -399,12 +435,15 @@ bool OpenSpaceFallbackDecider::IsCollisionFreeTrajectory(
                     shift_distance * std::sin(ego_theta)};
     ego_box.Shift(shift_vec);
     size_t predicted_time_horizon = predicted_bounding_rectangles.size();
+
+    // 遍历所有时间、所有障碍物的box
     for (size_t j = 0; j < predicted_time_horizon; j++) {
       for (const auto& obstacle_box : predicted_bounding_rectangles[j]) {
+        // 如果自车box与障碍物box有重叠
         if (ego_box.HasOverlap(obstacle_box)) {
           ADEBUG << "HasOverlap(obstacle_box) [" << i << "]";
-          const auto& vehicle_state = frame_->vehicle_state();
-          Vec2d vehicle_vec({vehicle_state.x(), vehicle_state.y()});
+          // const auto& vehicle_state = frame_->vehicle_state();
+          // Vec2d vehicle_vec({vehicle_state.x(), vehicle_state.y()});
           // remove points in previous trajectory
           if (std::abs(trajectory_point.relative_time() -
                        static_cast<double>(j) *
@@ -413,6 +452,8 @@ bool OpenSpaceFallbackDecider::IsCollisionFreeTrajectory(
               trajectory_point.relative_time() > 0.0) {
             ADEBUG << "first_collision_index: [" << i << "]";
             *first_collision_index = i;
+
+            // 返回false
             return false;
           }
         }

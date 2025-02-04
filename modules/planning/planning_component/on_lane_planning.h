@@ -74,31 +74,31 @@ class OnLanePlanning : public PlanningBase {
   common::VehicleState AlignTimeStamp(const common::VehicleState& vehicle_state,
                                       const double curr_timestamp) const;
 
-  void ExportReferenceLineDebug(planning_internal::Debug* debug);
-  bool CheckPlanningConfig(const PlanningConfig& config);
-  void GenerateStopTrajectory(ADCTrajectory* ptr_trajectory_pb);
-  void ExportFailedLaneChangeSTChart(const planning_internal::Debug& debug_info,
-                                     planning_internal::Debug* debug_chart);
-  void ExportOnLaneChart(const planning_internal::Debug& debug_info,
-                         planning_internal::Debug* debug_chart);
-  void ExportOpenSpaceChart(const planning_internal::Debug& debug_info,
-                            const ADCTrajectory& trajectory_pb,
-                            planning_internal::Debug* debug_chart);
-  void AddOpenSpaceOptimizerResult(const planning_internal::Debug& debug_info,
-                                   planning_internal::Debug* debug_chart);
-  void AddPartitionedTrajectory(const planning_internal::Debug& debug_info,
-                                planning_internal::Debug* debug_chart);
+//   void ExportReferenceLineDebug(planning_internal::Debug* debug);
+//   bool CheckPlanningConfig(const PlanningConfig& config);
+//   void GenerateStopTrajectory(ADCTrajectory* ptr_trajectory_pb);
+//   void ExportFailedLaneChangeSTChart(const planning_internal::Debug& debug_info,
+//                                      planning_internal::Debug* debug_chart);
+//   void ExportOnLaneChart(const planning_internal::Debug& debug_info,
+//                          planning_internal::Debug* debug_chart);
+//   void ExportOpenSpaceChart(const planning_internal::Debug& debug_info,
+//                             const ADCTrajectory& trajectory_pb,
+//                             planning_internal::Debug* debug_chart);
+//   void AddOpenSpaceOptimizerResult(const planning_internal::Debug& debug_info,
+//                                    planning_internal::Debug* debug_chart);
+//   void AddPartitionedTrajectory(const planning_internal::Debug& debug_info,
+//                                 planning_internal::Debug* debug_chart);
 
-  void AddStitchSpeedProfile(planning_internal::Debug* debug_chart);
+//   void AddStitchSpeedProfile(planning_internal::Debug* debug_chart);
 
-  void AddPublishedSpeed(const ADCTrajectory& trajectory_pb,
-                         planning_internal::Debug* debug_chart);
+//   void AddPublishedSpeed(const ADCTrajectory& trajectory_pb,
+//                          planning_internal::Debug* debug_chart);
 
-  void AddPublishedAcceleration(const ADCTrajectory& trajectory_pb,
-                                planning_internal::Debug* debug);
+//   void AddPublishedAcceleration(const ADCTrajectory& trajectory_pb,
+//                                 planning_internal::Debug* debug);
 
-  void AddFallbackTrajectory(const planning_internal::Debug& debug_info,
-                             planning_internal::Debug* debug_chart);
+//   void AddFallbackTrajectory(const planning_internal::Debug& debug_info,
+//                              planning_internal::Debug* debug_chart);
 
  private:
   PlanningCommand last_command_;

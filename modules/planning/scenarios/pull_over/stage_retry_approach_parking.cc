@@ -36,17 +36,20 @@ StageResult PullOverStageRetryApproachParking::FinishStage() {
   return StageResult(StageStatusType::FINISHED);
 }
 
+// 上一阶段直接靠边停车失败，进入该阶段重试接近靠边停车点。
 StageResult PullOverStageRetryApproachParking::Process(
     const TrajectoryPoint& planning_init_point, Frame* frame) {
   ADEBUG << "stage: RetryApproachParking";
   CHECK_NOTNULL(frame);
   CHECK_NOTNULL(context_);
 
+  // 执行所有task
   StageResult result = ExecuteTaskOnReferenceLine(planning_init_point, frame);
   if (result.HasError()) {
     AERROR << "PullOverStageRetryApproachParking planning error";
   }
 
+  // 如果车辆停止，结束stage
   if (CheckADCStop(*frame)) {
     return FinishStage();
   }
@@ -55,6 +58,8 @@ StageResult PullOverStageRetryApproachParking::Process(
 }
 
 bool PullOverStageRetryApproachParking::CheckADCStop(const Frame& frame) {
+
+  // 条件1：速度小于阈值
   const auto& reference_line_info = frame.reference_line_info().front();
   const double adc_speed = injector_->vehicle_state()->linear_velocity();
   const double max_adc_stop_speed = common::VehicleConfigHelper::Instance()
@@ -66,6 +71,7 @@ bool PullOverStageRetryApproachParking::CheckADCStop(const Frame& frame) {
     return false;
   }
 
+  // 条件2：距离小于阈值
   // check stop close enough to stop line of the stop_sign
   const double adc_front_edge_s = reference_line_info.AdcSlBoundary().end_s();
   const double stop_fence_start_s =

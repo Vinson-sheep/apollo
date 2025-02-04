@@ -37,21 +37,29 @@ double GridSearch::EuclidDistance(
   return std::sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2));
 }
 
+// 检查node合法性
 bool GridSearch::CheckConstraints(std::shared_ptr<Node2d> node) {
   const double node_grid_x = node->GetGridX();
   const double node_grid_y = node->GetGridY();
+
+  // 检查XY边界
   if (node_grid_x > max_grid_x_ ||
       node_grid_x < 0  ||
       node_grid_y > max_grid_y_ ||
       node_grid_y < 0) {
     return false;
   }
+
+  // 如果障碍物不存在，返回true
   if (obstacles_linesegments_vec_.empty()) {
     return true;
   }
+
+  // 遍历所有障碍物
   for (const auto& obstacle_linesegments : obstacles_linesegments_vec_) {
     for (const common::math::LineSegment2d& linesegment :
          obstacle_linesegments) {
+      // 如果离障碍物过近，返回false
       if (linesegment.DistanceTo({node->GetGridX(), node->GetGridY()})
           < node_radius_) {
         return false;
@@ -61,6 +69,7 @@ bool GridSearch::CheckConstraints(std::shared_ptr<Node2d> node) {
   return true;
 }
 
+// 八叉树扩展
 std::vector<std::shared_ptr<Node2d>> GridSearch::GenerateNextNodes(
     std::shared_ptr<Node2d> current_node) {
   double current_node_x = current_node->GetGridX();
@@ -104,6 +113,7 @@ std::vector<std::shared_ptr<Node2d>> GridSearch::GenerateNextNodes(
   return next_nodes;
 }
 
+// 未使用
 bool GridSearch::GenerateAStarPath(
     const double sx, const double sy, const double ex, const double ey,
     const std::vector<double>& XYbounds,
@@ -167,6 +177,8 @@ bool GridSearch::GenerateAStarPath(
   return true;
 }
 
+// 生成启发式函数地图
+// soft_boundary_linesegments_vec未使用
 bool GridSearch::GenerateDpMap(
         const double ex,
         const double ey,
@@ -187,31 +199,45 @@ bool GridSearch::GenerateDpMap(
   std::shared_ptr<Node2d> end_node =
       std::make_shared<Node2d>(ex, ey, xy_grid_resolution_, XYbounds_);
   obstacles_linesegments_vec_ = obstacles_linesegments_vec;
+
+  // 将末端状态加入到open_set和open_pq中
+  // 思路类似D*算法
   open_set.emplace(end_node->GetIndex(), end_node);
   open_pq.emplace(end_node->GetIndex(), end_node->GetCost());
 
   // Grid a star begins
   size_t explored_node_num = 0;
+  // 本质上是个BFS
   while (!open_pq.empty()) {
+    // 获取open_set第一个结点
     const std::string current_id = open_pq.top().first;
     open_pq.pop();
     std::shared_ptr<Node2d> current_node = open_set[current_id];
+
+    // 将当前结点加入到dp_map_
     dp_map_.emplace(current_node->GetIndex(), current_node);
+
+    // 遍历八叉树子节点
     std::vector<std::shared_ptr<Node2d>> next_nodes =
         std::move(GenerateNextNodes(current_node));
     for (auto& next_node : next_nodes) {
+      // 判断是否在边界内，或者与障碍物
       if (!CheckConstraints(next_node)) {
         continue;
       }
+      // 如果已经在close_set中，忽略
       if (dp_map_.find(next_node->GetIndex()) != dp_map_.end()) {
         continue;
       }
+      // 如果不在open_set中，更新代价
       if (open_set.find(next_node->GetIndex()) == open_set.end()) {
         ++explored_node_num;
         next_node->SetPreNode(current_node);
         open_set.emplace(next_node->GetIndex(), next_node);
         open_pq.emplace(next_node->GetIndex(), next_node->GetCost());
-      } else {
+      } 
+      // 否则，取最小代价
+      else {
         if (open_set[next_node->GetIndex()]->GetCost() > next_node->GetCost()) {
           open_set[next_node->GetIndex()]->SetCost(next_node->GetCost());
           open_set[next_node->GetIndex()]->SetPreNode(current_node);
@@ -224,14 +250,19 @@ bool GridSearch::GenerateDpMap(
 }
 
 double GridSearch::CheckDpMap(const double sx, const double sy) {
+  // 获取string索引
   std::string index = Node2d::CalcIndex(sx, sy, xy_grid_resolution_, XYbounds_);
+  // 如果地图中包含了该索引，返回代价值
   if (dp_map_.find(index) != dp_map_.end()) {
-    return dp_map_[index]->GetCost() * xy_grid_resolution_;
-  } else {
+    return dp_map_[index]->GetCost() * xy_grid_resolution_; // 注意这里乘resolution
+  } 
+  // 否则，返回无穷
+  else {
     return std::numeric_limits<double>::infinity();
   }
 }
 
+// 未使用
 void GridSearch::LoadGridAStarResult(GridAStartResult* result) {
   (*result).path_cost = final_node_->GetPathCost() * xy_grid_resolution_;
   std::shared_ptr<Node2d> current_node = final_node_;

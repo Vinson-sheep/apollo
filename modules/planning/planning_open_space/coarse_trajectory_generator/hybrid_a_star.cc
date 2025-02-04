@@ -37,19 +37,23 @@ using apollo::cyber::Clock;
 
 HybridAStar::HybridAStar(const PlannerOpenSpaceConfig& open_space_conf) {
   planner_open_space_config_.CopyFrom(open_space_conf);
+
+  // rs曲线生成器
   reed_shepp_generator_ =
       std::make_unique<ReedShepp>(vehicle_param_, planner_open_space_config_);
+  
+  // 网格搜索
   grid_a_star_heuristic_generator_ =
       std::make_unique<GridSearch>(planner_open_space_config_);
   next_node_num_ =
-      planner_open_space_config_.warm_start_config().next_node_num();
+      planner_open_space_config_.warm_start_config().next_node_num(); // 3/10/16
   max_steer_angle_ = vehicle_param_.max_steer_angle() /
                      vehicle_param_.steer_ratio() *
                      planner_open_space_config_.warm_start_config()
                          .traj_kappa_contraint_ratio();
-  step_size_ = planner_open_space_config_.warm_start_config().step_size();
+  step_size_ = planner_open_space_config_.warm_start_config().step_size(); // 0.1/0.25
   xy_grid_resolution_ =
-      planner_open_space_config_.warm_start_config().xy_grid_resolution();
+      planner_open_space_config_.warm_start_config().xy_grid_resolution(); // 0.3
   arc_length_ =
       planner_open_space_config_.warm_start_config().phi_grid_resolution() *
       vehicle_param_.wheel_base() /
@@ -59,6 +63,8 @@ HybridAStar::HybridAStar(const PlannerOpenSpaceConfig& open_space_conf) {
   }
   AINFO << "arc_length" << arc_length_;
   delta_t_ = planner_open_space_config_.delta_t();
+
+  // penalty
   traj_forward_penalty_ =
       planner_open_space_config_.warm_start_config().traj_forward_penalty();
   traj_back_penalty_ =
@@ -69,6 +75,8 @@ HybridAStar::HybridAStar(const PlannerOpenSpaceConfig& open_space_conf) {
       planner_open_space_config_.warm_start_config().traj_steer_penalty();
   traj_steer_change_penalty_ = planner_open_space_config_.warm_start_config()
                                    .traj_steer_change_penalty();
+
+  // weight
   acc_weight_ = planner_open_space_config_.iterative_anchoring_smoother_config()
                     .s_curve_config()
                     .acc_weight();
@@ -88,6 +96,8 @@ HybridAStar::HybridAStar(const PlannerOpenSpaceConfig& open_space_conf) {
       planner_open_space_config_.iterative_anchoring_smoother_config()
           .s_curve_config()
           .ref_v_weight();
+
+  // max boundary
   max_forward_v_ =
       planner_open_space_config_.iterative_anchoring_smoother_config()
           .max_forward_v();
@@ -110,13 +120,19 @@ bool HybridAStar::AnalyticExpansion(
     std::shared_ptr<Node3d>* candidate_final_node) {
   std::shared_ptr<ReedSheppPath> reeds_shepp_to_check =
       std::make_shared<ReedSheppPath>();
+
+  // 生成RS曲线
   if (!reed_shepp_generator_->ShortestRSP(current_node, end_node_,
                                           reeds_shepp_to_check)) {
     return false;
   }
+
+  // 检查RS曲线合法性
   if (!RSPCheck(reeds_shepp_to_check)) {
     return false;
   }
+
+  // 加载末端点
   // load the whole RSP as nodes and add to the close set
   *candidate_final_node = LoadRSPinCS(reeds_shepp_to_check, current_node);
   return true;
@@ -124,16 +140,19 @@ bool HybridAStar::AnalyticExpansion(
 
 bool HybridAStar::RSPCheck(
     const std::shared_ptr<ReedSheppPath> reeds_shepp_to_end) {
+  // 为什么只有一个点
   std::shared_ptr<Node3d> node = std::shared_ptr<Node3d>(new Node3d(
       reeds_shepp_to_end->x, reeds_shepp_to_end->y, reeds_shepp_to_end->phi,
       XYbounds_, planner_open_space_config_));
   return ValidityCheck(node);
 }
 
+// 检查Node的合法性
 bool HybridAStar::ValidityCheck(std::shared_ptr<Node3d> node) {
   CHECK_NOTNULL(node);
   CHECK_GT(node->GetStepSize(), 0U);
 
+  // 如果没有障碍物，直接返回true
   if (obstacles_linesegments_vec_.empty()) {
     return true;
   }
@@ -153,10 +172,14 @@ bool HybridAStar::ValidityCheck(std::shared_ptr<Node3d> node) {
   }
 
   for (size_t i = check_start_index; i < node_step_size; ++i) {
+
+    // 判断node是否在XY边界内
     if (traversed_x[i] > XYbounds_[1] || traversed_x[i] < XYbounds_[0] ||
         traversed_y[i] > XYbounds_[3] || traversed_y[i] < XYbounds_[2]) {
       return false;
     }
+
+    // 判断node是否与障碍物重叠
     Box2d bounding_box = Node3d::GetBoundingBox(
         vehicle_param_, traversed_x[i], traversed_y[i], traversed_phi[i]);
     for (const auto& obstacle_linesegments : obstacles_linesegments_vec_) {
@@ -188,6 +211,9 @@ std::shared_ptr<Node3d> HybridAStar::LoadRSPinCS(
 
 std::shared_ptr<Node3d> HybridAStar::Next_node_generator(
     std::shared_ptr<Node3d> current_node, size_t next_node_index) {
+
+  // 计算steering和traveled_distance
+  // 实际控制量为steering
   double steering = 0.0;
   double traveled_distance = 0.0;
   if (next_node_index < static_cast<double>(next_node_num_) / 2) {
@@ -204,6 +230,8 @@ std::shared_ptr<Node3d> HybridAStar::Next_node_generator(
             * static_cast<double>(index);
     traveled_distance = -step_size_;
   }
+
+  // 
   // take above motion primitive to generate a curve driving the car to a
   // different grid
   std::vector<double> intermediate_x;
@@ -215,6 +243,8 @@ std::shared_ptr<Node3d> HybridAStar::Next_node_generator(
   intermediate_x.push_back(last_x);
   intermediate_y.push_back(last_y);
   intermediate_phi.push_back(last_phi);
+
+  // 采用离散积分形式进行扩展
   for (size_t i = 0; i < arc_length_ / step_size_; ++i) {
     const double next_phi = last_phi +
                             traveled_distance /
@@ -233,6 +263,8 @@ std::shared_ptr<Node3d> HybridAStar::Next_node_generator(
     last_y = next_y;
     last_phi = next_phi;
   }
+
+  // 如果拓展后的结点不在边界内，返回nullptr
   // check if the vehicle runs outside of XY boundary
   if (intermediate_x.back() > XYbounds_[1] ||
       intermediate_x.back() < XYbounds_[0] ||
@@ -240,6 +272,8 @@ std::shared_ptr<Node3d> HybridAStar::Next_node_generator(
       intermediate_y.back() < XYbounds_[2]) {
     return nullptr;
   }
+
+  // 设置新结点信息，返回next_node
   std::shared_ptr<Node3d> next_node = std::shared_ptr<Node3d>(
       new Node3d(intermediate_x, intermediate_y, intermediate_phi, XYbounds_,
                  planner_open_space_config_));
@@ -251,18 +285,23 @@ std::shared_ptr<Node3d> HybridAStar::Next_node_generator(
 
 void HybridAStar::CalculateNodeCost(
     std::shared_ptr<Node3d> current_node, std::shared_ptr<Node3d> next_node) {
+  // g(x)
   next_node->SetTrajCost(
       current_node->GetTrajCost() + TrajCost(current_node, next_node));
   // evaluate heuristic cost
+  // h(x)
   double optimal_path_cost = 0.0;
   optimal_path_cost += HoloObstacleHeuristic(next_node);
   next_node->SetHeuCost(optimal_path_cost);
 }
 
+// 计算两点代价
 double HybridAStar::TrajCost(std::shared_ptr<Node3d> current_node,
                              std::shared_ptr<Node3d> next_node) {
     // evaluate cost on the trajectory and add current cost
   double piecewise_cost = 0.0;
+
+  // 计算前后档代价
   if (next_node->GetDirec()) {
     piecewise_cost +=
       static_cast<double>(next_node->GetStepSize() - 1) *
@@ -274,36 +313,50 @@ double HybridAStar::TrajCost(std::shared_ptr<Node3d> current_node,
       step_size_ *
       traj_back_penalty_;
   }
+
   AINFO << "traj cost: " << piecewise_cost;
+  // 前后档位切换代价
   if (current_node->GetDirec() != next_node->GetDirec()) {
     piecewise_cost += traj_gear_switch_penalty_;
   }
+
+  // steer代价
   piecewise_cost += traj_steer_penalty_ * std::abs(next_node->GetSteer());
+
+  // steer切换代价
   piecewise_cost += traj_steer_change_penalty_ *
                     std::abs(next_node->GetSteer() - current_node->GetSteer());
   return piecewise_cost;
 }
 
 double HybridAStar::HoloObstacleHeuristic(std::shared_ptr<Node3d> next_node) {
+  // 启发式函数没有考虑heading
   return grid_a_star_heuristic_generator_->CheckDpMap(
       next_node->GetX(), next_node->GetY());
 }
 
+// 提取规划结果
 bool HybridAStar::GetResult(HybridAStartResult* result) {
+
   std::shared_ptr<Node3d> current_node = final_node_;
   std::vector<double> hybrid_a_x;
   std::vector<double> hybrid_a_y;
   std::vector<double> hybrid_a_phi;
-  AINFO << "switch node:" << current_node->GetXs().back()
-        << ", " << current_node->GetYs().back();
-  AINFO << "switch node:" << current_node->GetXs().front()
-        << ", " << current_node->GetYs().front();
-  AINFO << "cost: " << final_node_->GetCost()
-        << "," << final_node_->GetTrajCost();
+  // AINFO << "switch node:" << current_node->GetXs().back()
+  //       << ", " << current_node->GetYs().back();
+  // AINFO << "switch node:" << current_node->GetXs().front()
+  //       << ", " << current_node->GetYs().front();
+  // AINFO << "cost: " << final_node_->GetCost()
+  //       << "," << final_node_->GetTrajCost();
+
+
+  // 从后往前遍历
   while (current_node->GetPreNode() != nullptr) {
     std::vector<double> x = current_node->GetXs();
     std::vector<double> y = current_node->GetYs();
     std::vector<double> phi = current_node->GetPhis();
+
+    // 校验点信息
     if (x.empty() || y.empty() || phi.empty()) {
         AERROR << "result size check failed";
         return false;
@@ -312,6 +365,8 @@ bool HybridAStar::GetResult(HybridAStartResult* result) {
         AERROR << "states sizes are not equal";
         return false;
     }
+
+    // 加载当前点信息
     std::reverse(x.begin(), x.end());
     std::reverse(y.begin(), y.end());
     std::reverse(phi.begin(), phi.end());
@@ -323,6 +378,8 @@ bool HybridAStar::GetResult(HybridAStartResult* result) {
     hybrid_a_phi.insert(hybrid_a_phi.end(), phi.begin(), phi.end());
     current_node = current_node->GetPreNode();
   }
+
+  // 处理初始结点
   hybrid_a_x.push_back(current_node->GetX());
   hybrid_a_y.push_back(current_node->GetY());
   hybrid_a_phi.push_back(current_node->GetPhi());
@@ -333,11 +390,13 @@ bool HybridAStar::GetResult(HybridAStartResult* result) {
   (*result).y = hybrid_a_y;
   (*result).phi = hybrid_a_phi;
 
+  // 对轨迹进行切片，并且进行平滑，再进行拼接
   if (!GetTemporalProfile(result)) {
     AERROR << "GetSpeedProfile from Hybrid Astar path fails";
     return false;
   }
 
+  // 校验result
   if (result->x.size() != result->y.size() ||
       result->x.size() != result->v.size() ||
       result->x.size() != result->phi.size()) {
@@ -356,11 +415,14 @@ bool HybridAStar::GetResult(HybridAStartResult* result) {
     AERROR << " x size: " << result->x.size();
     return false;
   }
+
   return true;
 }
 
 bool HybridAStar::GenerateSpeedAcceleration(
     HybridAStartResult* result) {
+
+  // 安全性校验
   AINFO << "GenerateSpeedAcceleration";
   // Sanity Check
   if (result->x.size() < 2 || result->y.size() < 2 || result->phi.size() < 2) {
@@ -369,10 +431,12 @@ bool HybridAStar::GenerateSpeedAcceleration(
   }
   const size_t x_size = result->x.size();
 
+  // 初始速度和末端速度为零，是否有问题？？
   // load velocity from position
   // initial and end speed are set to be zeros
   result->v.push_back(0.0);
   for (size_t i = 1; i + 1 < x_size; ++i) {
+    // 计算离散线速度
     double discrete_v = (((result->x[i + 1] - result->x[i]) / delta_t_) *
                              std::cos(result->phi[i]) +
                          ((result->x[i] - result->x[i - 1]) / delta_t_) *
@@ -387,12 +451,14 @@ bool HybridAStar::GenerateSpeedAcceleration(
   }
   result->v.push_back(0.0);
 
+  // 计算线加速度
   // load acceleration from velocity
   for (size_t i = 0; i + 1 < x_size; ++i) {
     const double discrete_a = (result->v[i + 1] - result->v[i]) / delta_t_;
     result->a.push_back(discrete_a);
   }
 
+  // 计算转向角
   // load steering from phi
   for (size_t i = 0; i + 1 < x_size; ++i) {
     double discrete_steer = (result->phi[i + 1] - result->phi[i]) *
@@ -407,6 +473,7 @@ bool HybridAStar::GenerateSpeedAcceleration(
   return true;
 }
 
+// 此处还使用piecewise_jerk进行平滑
 bool HybridAStar::GenerateSCurveSpeedAcceleration(HybridAStartResult* result) {
   AINFO << "GenerateSCurveSpeedAcceleration";
   // sanity check
@@ -606,6 +673,8 @@ bool HybridAStar::GenerateSCurveSpeedAcceleration(HybridAStartResult* result) {
 bool HybridAStar::TrajectoryPartition(
         const HybridAStartResult& result,
         std::vector<HybridAStartResult>* partitioned_result) {
+
+  // 提取x/y/phi
   const auto& x = result.x;
   const auto& y = result.y;
   const auto& phi = result.phi;
@@ -626,6 +695,8 @@ bool HybridAStar::TrajectoryPartition(
       std::abs(common::math::NormalizeAngle(tracking_angle - heading_angle))
       <
       (M_PI_2);
+  
+  // 如果轨迹前后档位不一致，那么需要分段
   for (size_t i = 0; i < horizon - 1; ++i) {
     heading_angle = phi[i];
     const Vec2d tracking_vector(x[i + 1] - x[i], y[i + 1] - y[i]);
@@ -651,6 +722,7 @@ bool HybridAStar::TrajectoryPartition(
 
   const auto start_timestamp = std::chrono::system_clock::now();
 
+  // 遍历所有轨迹段，对轨迹段进行平滑
   // Retrieve v, a and steer from path
   for (auto& result : *partitioned_result) {
     if (FLAGS_use_s_curve_speed_smooth) {
@@ -673,12 +745,16 @@ bool HybridAStar::TrajectoryPartition(
 }
 
 bool HybridAStar::GetTemporalProfile(HybridAStartResult* result) {
+
+  // 对轨迹进行分段和平滑
   std::vector<HybridAStartResult> partitioned_results;
   if (!TrajectoryPartition(*result, &partitioned_results)) {
     AERROR << "TrajectoryPartition fail";
     return false;
   }
   ADEBUG << "PARTION SIZE " << partitioned_results.size();
+
+  // 分段之后再进行拼接？
   HybridAStartResult stitched_result;
   for (const auto& result : partitioned_results) {
     std::copy(result.x.begin(), result.x.end() - 1,
@@ -710,13 +786,19 @@ bool HybridAStar::Plan(
     const std::vector<std::vector<common::math::Vec2d>>&
         soft_boundary_vertices_vec,
     bool reeds_sheep_last_straight) {
+
+  // 虽然为RS曲线生成器赋值了reeds_sheep_last_straight_，但没用上
   reed_shepp_generator_->reeds_sheep_last_straight_ = reeds_sheep_last_straight;
+
   // clear containers
   open_set_.clear();
   close_set_.clear();
   open_pq_ = decltype(open_pq_)();
   final_node_ = nullptr;
-  PrintCurves print_curves;
+  // PrintCurves print_curves;
+
+  // 将obstacles_vertices_vec转换为obstacles_linesegments_vec
+  // 只是换个形式，没有本质区别
   std::vector<std::vector<common::math::LineSegment2d>>
       obstacles_linesegments_vec;
   for (const auto& obstacle_vertices : obstacles_vertices_vec) {
@@ -731,13 +813,8 @@ bool HybridAStar::Plan(
     obstacles_linesegments_vec.emplace_back(obstacle_linesegments);
   }
   obstacles_linesegments_vec_ = std::move(obstacles_linesegments_vec);
-  for (size_t i = 0; i < obstacles_linesegments_vec_.size(); i++) {
-    for (auto linesg : obstacles_linesegments_vec_[i]) {
-      std::string name = std::to_string(i) + "roi_boundary";
-      print_curves.AddPoint(name, linesg.start());
-      print_curves.AddPoint(name, linesg.end());
-    }
-  }
+
+  // 计算起始位置框
   Vec2d sposition(sx, sy);
   Vec2d svec_to_center(
           (vehicle_param_.front_edge_to_center() -
@@ -746,9 +823,9 @@ bool HybridAStar::Plan(
            vehicle_param_.right_edge_to_center()) / 2.0);
   Vec2d scenter(sposition + svec_to_center.rotate(sphi));
   Box2d sbox(scenter, sphi, vehicle_param_.length(), vehicle_param_.width());
-  print_curves.AddPoint("vehicle_start_box", sbox.GetAllCorners());
+
+  // 计算末端位置框
   Vec2d eposition(ex, ey);
-  print_curves.AddPoint("end_position", eposition);
   Vec2d evec_to_center(
           (vehicle_param_.front_edge_to_center() -
            vehicle_param_.back_edge_to_center()) / 2.0,
@@ -756,35 +833,38 @@ bool HybridAStar::Plan(
            vehicle_param_.right_edge_to_center()) / 2.0);
   Vec2d ecenter(eposition + evec_to_center.rotate(ephi));
   Box2d ebox(ecenter, ephi, vehicle_param_.length(), vehicle_param_.width());
-  print_curves.AddPoint("vehicle_end_box", ebox.GetAllCorners());
+
+  // 初始化起止信息和XY边界
   XYbounds_ = XYbounds;
-// load nodes and obstacles
   start_node_.reset(
       new Node3d({sx}, {sy}, {sphi}, XYbounds_, planner_open_space_config_));
   end_node_.reset(
       new Node3d({ex}, {ey}, {ephi}, XYbounds_, planner_open_space_config_));
-  AINFO << "start node" << sx << "," << sy << "," << sphi;
-  AINFO << "end node " << ex << "," << ey << "," << ephi;
+
+  // 判断起始点是否在XY边界内，且无碰撞
   if (!ValidityCheck(start_node_)) {
     AERROR << "start_node in collision with obstacles";
-    AERROR << start_node_->GetX()
-           << "," << start_node_->GetY()
-           << "," << start_node_->GetPhi();
-    print_curves.PrintToLog();
     return false;
   }
+
+  // 判断终止点是否在XY边界内，且无碰撞
   if (!ValidityCheck(end_node_)) {
     AERROR << "end_node in collision with obstacles";
-    print_curves.PrintToLog();
     return false;
   }
+
+  // 构建网格地图
   double map_time = Clock::NowInSeconds();
   grid_a_star_heuristic_generator_->GenerateDpMap(
       ex, ey, XYbounds_, obstacles_linesegments_vec_);
   ADEBUG << "map time " << Clock::NowInSeconds() - map_time;
+
+  // 初始化搜索数据
+
   // load open set, pq
   open_set_.insert(start_node_->GetIndex());
   open_pq_.emplace(start_node_, start_node_->GetCost());
+
   // Hybrid A* begins
   size_t explored_node_num = 0;
   size_t available_result_num = 0;
@@ -801,16 +881,22 @@ bool HybridAStar::Plan(
       planner_open_space_config_.warm_start_config().desired_explored_num(),
       planner_open_space_config_.warm_start_config().max_explored_num());
   static constexpr int kMaxNodeNum = 200000;
-  std::vector<std::shared_ptr<Node3d>> candidate_final_nodes;
+
+  // 开始搜索
   while (!open_pq_.empty() &&
          open_pq_.size() < kMaxNodeNum &&
          available_result_num < desired_explored_num &&
          explored_node_num < max_explored_num) {
+
+    // 取出优先队列的第一个点
     std::shared_ptr<Node3d> current_node = open_pq_.top().first;
     open_pq_.pop();
-    const double rs_start_time = Clock::NowInSeconds();
+
+    // 生成RS曲线
+    // const double rs_start_time = Clock::NowInSeconds();
     std::shared_ptr<Node3d> final_node = nullptr;
     if (AnalyticExpansion(current_node, &final_node)) {
+      // 如果之前没有解，或者已有解代价较大，采用新的解
       if (final_node_ == nullptr ||
           final_node_->GetTrajCost() > final_node->GetTrajCost()) {
         final_node_ = final_node;
@@ -820,10 +906,13 @@ bool HybridAStar::Plan(
       available_result_num++;
     }
     explored_node_num++;
-    const double rs_end_time = Clock::NowInSeconds();
-    rs_time += rs_end_time - rs_start_time;
+    // const double rs_end_time = Clock::NowInSeconds();
+    // rs_time += rs_end_time - rs_start_time;
+
+    // 当前结点加入闭集
     close_set_.insert(current_node->GetIndex());
 
+    // 如果算法超时，或者达到迭代次数上限，终止算法
     if (Clock::NowInSeconds() - astar_start_time >
             planner_open_space_config_.warm_start_config()
                 .astar_max_search_time() &&
@@ -831,78 +920,93 @@ bool HybridAStar::Plan(
       break;
     }
 
+    // 扩展结点
     size_t begin_index = 0;
-    size_t end_index = next_node_num_;
+    size_t end_index = next_node_num_;  // 3/10/16
     std::unordered_set<std::string> temp_set;
     for (size_t i = begin_index; i < end_index; ++i) {
-      const double gen_node_time = Clock::NowInSeconds();
-      std::shared_ptr<Node3d> next_node = Next_node_generator(current_node, i);
-      node_generator_time += Clock::NowInSeconds() - gen_node_time;
 
+      // 基于current_node扩展子节点
+      // const double gen_node_time = Clock::NowInSeconds();
+      std::shared_ptr<Node3d> next_node = Next_node_generator(current_node, i);
+      // node_generator_time += Clock::NowInSeconds() - gen_node_time;
+
+      // 如果扩展失败，跳过该节点
       // boundary check failure handle
       if (next_node == nullptr) {
         continue;
       }
+
+      // 如果子节点在闭集中，跳过当前节点
       // check if the node is already in the close set
       if (close_set_.count(next_node->GetIndex()) > 0) {
         continue;
       }
+
+      // 如果子节点与障碍物发生碰撞，跳过当前节点
       // collision check
-      const double validity_check_start_time = Clock::NowInSeconds();
+      // const double validity_check_start_time = Clock::NowInSeconds();
       if (!ValidityCheck(next_node)) {
         continue;
       }
-      validity_check_time += Clock::NowInSeconds() - validity_check_start_time;
+      // validity_check_time += Clock::NowInSeconds() - validity_check_start_time;
+
+      // 
       if (open_set_.count(next_node->GetIndex()) == 0) {
-        const double start_time = Clock::NowInSeconds();
+        // 计算新节点的代价
+        // const double start_time = Clock::NowInSeconds();
         CalculateNodeCost(current_node, next_node);
-        const double end_time = Clock::NowInSeconds();
-        heuristic_time += end_time - start_time;
+        // const double end_time = Clock::NowInSeconds();
+        // heuristic_time += end_time - start_time;
+
+        // 新节点插入优先队列
         temp_set.insert(next_node->GetIndex());
         open_pq_.emplace(next_node, next_node->GetCost());
       }
     }
+    // 新节点插入开放集
     open_set_.insert(temp_set.begin(), temp_set.end());
   }
 
+  // 如果RS曲线生成失败，返回false
   if (final_node_ == nullptr) {
     AERROR << "Hybird A* cannot find a valid path";
-    print_curves.PrintToLog();
+    // print_curves.PrintToLog();
     return false;
   }
 
-  AINFO << "open_pq_.empty()" << (open_pq_.empty() ? "true" : "false");
-  AINFO << "open_pq_.size()" << open_pq_.size();
-  AINFO << "desired_explored_num" << desired_explored_num;
-  AINFO << "min cost is : " << final_node_->GetTrajCost();
-  AINFO << "max_explored_num is " << max_explored_num;
-  AINFO << "explored node num is " << explored_node_num
-        << "available_result_num " << available_result_num;
-  AINFO << "best_explored_num is " << best_explored_num
-        << "best_available_result_num is " << best_available_result_num;
-  AINFO << "cal node time is " << heuristic_time
-        << "validity_check_time " << validity_check_time
-        << "node_generator_time " << node_generator_time;
-  AINFO << "reed shepp time is " << rs_time;
-  AINFO << "hybrid astar total time is "
-        << Clock::NowInSeconds() - astar_start_time;
+  // AINFO << "open_pq_.empty()" << (open_pq_.empty() ? "true" : "false");
+  // AINFO << "open_pq_.size()" << open_pq_.size();
+  // AINFO << "desired_explored_num" << desired_explored_num;
+  // AINFO << "min cost is : " << final_node_->GetTrajCost();
+  // AINFO << "max_explored_num is " << max_explored_num;
+  // AINFO << "explored node num is " << explored_node_num
+  //       << "available_result_num " << available_result_num;
+  // AINFO << "best_explored_num is " << best_explored_num
+  //       << "best_available_result_num is " << best_available_result_num;
+  // AINFO << "cal node time is " << heuristic_time
+  //       << "validity_check_time " << validity_check_time
+  //       << "node_generator_time " << node_generator_time;
+  // AINFO << "reed shepp time is " << rs_time;
+  // AINFO << "hybrid astar total time is "
+  //       << Clock::NowInSeconds() - astar_start_time;
 
-  print_curves.AddPoint(
-      "rs_point", final_node_->GetXs().front(), final_node_->GetYs().front());
+  // print_curves.AddPoint(
+  //     "rs_point", final_node_->GetXs().front(), final_node_->GetYs().front());
   if (!GetResult(result)) {
     AERROR << "GetResult failed";
-    print_curves.PrintToLog();
+    // print_curves.PrintToLog();
     return false;
   }
-  for (size_t i = 0; i < result->x.size(); i++) {
-    print_curves.AddPoint("warm_path", result->x[i], result->y[i]);
-  }
+  // for (size_t i = 0; i < result->x.size(); i++) {
+  //   print_curves.AddPoint("warm_path", result->x[i], result->y[i]);
+  // }
   // PrintBox print_box("warm_path_box");
   // for (size_t i = 0; i < result->x.size(); i = i + 5) {
   //   print_box.AddAdcBox(result->x[i], result->y[i], result->phi[i]);
   // }
   // print_box.PrintToLog();
-  print_curves.PrintToLog();
+  // print_curves.PrintToLog();
   return true;
 }
 }  // namespace planning

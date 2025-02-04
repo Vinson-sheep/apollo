@@ -97,6 +97,7 @@ Status OpenSpaceTrajectoryProvider::Process() {
   auto trajectory_data =
       frame_->mutable_open_space_info()->mutable_stitched_trajectory_result();
 
+  // 如果当前处于park_and_go场景的check阶段，直接生成刹车轨迹
   // generate stop trajectory at park_and_go check_stage
   if (injector_->planning_context()
           ->mutable_planning_status()
@@ -107,6 +108,7 @@ Status OpenSpaceTrajectoryProvider::Process() {
     return Status::OK();
   }
 
+  // ？？
   // when in zone cover stage, should change end pose
   if (FLAGS_change_end_pose) {
     AINFO << "Restart OpenSpaceTrajectoryProvider!";
@@ -114,31 +116,44 @@ Status OpenSpaceTrajectoryProvider::Process() {
     Restart();
   }
 
+  // 调用GenerateTrajectoryThread生成轨迹
   // Start thread when getting in Process() for the first time
   if (config_.enable_open_space_planner_thread() && !thread_init_flag_) {
     task_future_ = cyber::Async(
         &OpenSpaceTrajectoryProvider::GenerateTrajectoryThread, this);
     thread_init_flag_ = true;
   }
+
+  // 
   bool need_replan = false;
   // Get stitching trajectory from last frame
   const common::VehicleState vehicle_state = frame_->vehicle_state();
+
+  // 提取上一帧
   auto* previous_frame = injector_->frame_history()->Latest();
   // Use complete raw trajectory from last frame for stitching purpose
   std::vector<TrajectoryPoint> stitching_trajectory;
+
+  // 是否处于fallback && 自车线速度是否低于阈值
   bool is_stop_due_to_fallback = false;
   if (previous_frame &&
       IsVehicleStopDueToFallBack(
           previous_frame->open_space_info().fallback_flag(), vehicle_state)) {
     is_stop_due_to_fallback = true;
   }
+
+  // 如果重规划还没有完成，或者由于fallback停止
   if (!is_planned_ || is_stop_due_to_fallback) {
-    AINFO << "need to fallback: is_planned" << is_planned_
-          << "is_stop_due_to_fallback" << is_stop_due_to_fallback;
+    // AINFO << "need to fallback: is_planned" << is_planned_
+    //       << "is_stop_due_to_fallback" << is_stop_due_to_fallback;
+
+    // 计算stitching_trajectory
     const double planning_cycle_time =
         1.0 / static_cast<double>(FLAGS_planning_loop_rate);
     stitching_trajectory = TrajectoryStitcher::ComputeReinitStitchingTrajectory(
         planning_cycle_time, vehicle_state);
+
+    // ???
     if (FLAGS_calculate_next_trajectory &&
         last_trajctory_point.has_path_point() && !is_stop_due_to_fallback) {
       last_trajctory_point.mutable_path_point()->set_s(0.0);
@@ -147,9 +162,9 @@ Status OpenSpaceTrajectoryProvider::Process() {
       stitching_trajectory =
           std::vector<TrajectoryPoint>(1, last_trajctory_point);
     }
-    for (auto& trajectorypoint : stitching_trajectory) {
-      AINFO << "stitching_trajectory: " << trajectorypoint.DebugString();
-    }
+    // for (auto& trajectorypoint : stitching_trajectory) {
+    //   AINFO << "stitching_trajectory: " << trajectorypoint.DebugString();
+    // }
     need_replan = true;
     injector_->planning_context()
         ->mutable_planning_status()
@@ -157,9 +172,11 @@ Status OpenSpaceTrajectoryProvider::Process() {
         ->set_position_init(false);
     frame_->mutable_open_space_info()->set_open_space_provider_success(false);
   }
+  
   // Get open_space_info from current frame
   const auto& open_space_info = frame_->open_space_info();
 
+  // 如果允许使用新线程去计算轨迹，则将数据复制到临界区，让新线程进行计算
   if (config_.enable_open_space_planner_thread()) {
     ADEBUG << "Open space plan in multi-threads mode";
 
@@ -169,6 +186,8 @@ Status OpenSpaceTrajectoryProvider::Process() {
     }
 
     if (need_replan) {
+
+      // 获取停车位姿
       std::vector<double> temp_target =
           frame_->open_space_info().open_space_end_pose();
       if (open_space_info.target_parking_spot_id() != "") {
@@ -178,6 +197,8 @@ Status OpenSpaceTrajectoryProvider::Process() {
         temp_target[1] = straight_trajectory_length_ * sin(angle) +
                          open_space_info.open_space_end_pose()[1];
       }
+
+      // 将起始轨迹、末端姿态、障碍物信息和坐标位姿赋值给线程
       std::lock_guard<std::mutex> lock(open_space_mutex_);
       thread_data_.stitching_trajectory = stitching_trajectory;
       thread_data_.end_pose = temp_target;
@@ -196,6 +217,7 @@ Status OpenSpaceTrajectoryProvider::Process() {
       data_ready_.store(false);
     }
 
+    // 如果自车已经非常接近目标位姿，则产生停止轨迹
     // Check vehicle state
     if (IsVehicleNearDestination(
             vehicle_state, open_space_info.open_space_end_pose(),
@@ -206,25 +228,27 @@ Status OpenSpaceTrajectoryProvider::Process() {
       return Status(ErrorCode::OK, "Vehicle is near to destination");
     }
 
+    // 如果规划线程已经获取了轨迹，加载轨迹
     // Check if trajectory updated
     if (trajectory_updated_) {
       std::lock_guard<std::mutex> lock(open_space_mutex_);
       LoadResult(trajectory_data);
-      if (FLAGS_enable_record_debug) {
-        // call merge debug ptr, open_space_trajectory_optimizer_
-        auto* ptr_debug = frame_->mutable_open_space_info()->mutable_debug();
-        open_space_trajectory_optimizer_->UpdateDebugInfo(
-            ptr_debug->mutable_planning_data()->mutable_open_space());
+      // if (FLAGS_enable_record_debug) {
+      //   // call merge debug ptr, open_space_trajectory_optimizer_
+      //   auto* ptr_debug = frame_->mutable_open_space_info()->mutable_debug();
+      //   open_space_trajectory_optimizer_->UpdateDebugInfo(
+      //       ptr_debug->mutable_planning_data()->mutable_open_space());
 
-        // sync debug instance
-        frame_->mutable_open_space_info()->sync_debug_instance();
-      }
-      AINFO << "Trajectory Update" << trajectory_data->size();
+      //   // sync debug instance
+      //   frame_->mutable_open_space_info()->sync_debug_instance();
+      // }
+      // AINFO << "Trajectory Update" << trajectory_data->size();
       data_ready_.store(false);
       trajectory_updated_.store(false);
       return Status::OK();
     }
 
+    // 如果规划线程执行失败，增加失败计数，下次重新规划
     if (trajectory_error_) {
       AINFO << "error";
       ++optimizer_thread_counter;
@@ -234,38 +258,46 @@ Status OpenSpaceTrajectoryProvider::Process() {
       // result has out of bound pathpoint which is not allowed for next
       // iteration hybrid astar algorithm which requires start position to be
       // strictly in bound
+      // 规划如果累积到一定的数目
       if (optimizer_thread_counter > 1000) {
         return Status(ErrorCode::PLANNING_ERROR,
                       "open_space_optimizer failed too many times");
       }
     }
 
+    // 如果上一帧存在且规划成功，本帧不需要规划，则沿用上一帧
     if (previous_frame &&
         previous_frame->open_space_info().open_space_provider_success() &&
         !need_replan) {
       ReuseLastFrameResult(previous_frame, trajectory_data);
-      if (FLAGS_enable_record_debug) {
-        // copy previous debug to current frame
-        ReuseLastFrameDebug(previous_frame);
-      }
+      // if (FLAGS_enable_record_debug) {
+      //   // copy previous debug to current frame
+      //   ReuseLastFrameDebug(previous_frame);
+      // }
       // reuse last frame debug when use last frame traj
       AINFO << "ReuseLastFrameResult";
       return Status(ErrorCode::OK,
                     "Waiting for open_space_trajectory_optimizer in "
                     "open_space_trajectory_provider");
     } else {
+      // 否则，如果上一帧存在且存在轨迹，则沿用旧轨迹
+      // 这个轨迹不一定是本task规划的结果
       AINFO << "Stop due to computation not finished";
       if (previous_frame && !previous_frame->open_space_info()
                                  .stitched_trajectory_result()
                                  .empty()) {
         *(trajectory_data) =
             previous_frame->open_space_info().stitched_trajectory_result();
-      } else {
+      } 
+      // 否则，生成停止轨迹
+      else {
         GenerateStopTrajectory(trajectory_data);
       }
       return Status(ErrorCode::OK, "Stop due to computation not finished");
     }
-  } else {
+  } 
+  // 不使用新线程计算轨迹
+  else {
     const auto& end_pose = open_space_info.open_space_end_pose();
     const auto& rotate_angle = open_space_info.origin_heading();
     const auto& translate_origin = open_space_info.origin_point();
@@ -276,6 +308,7 @@ Status OpenSpaceTrajectoryProvider::Process() {
         open_space_info.obstacles_vertices_vec();
     const auto& XYbounds = open_space_info.ROI_xy_boundary();
 
+    // 如果已经接近目标点，则产生停止轨迹
     // Check vehicle state
     if (IsVehicleNearDestination(vehicle_state, end_pose, rotate_angle,
                                  translate_origin)) {
@@ -283,6 +316,7 @@ Status OpenSpaceTrajectoryProvider::Process() {
       return Status(ErrorCode::OK, "Vehicle is near to destination");
     }
 
+    // 生成轨迹
     // Generate Trajectory;
     double time_latency;
     Status status = open_space_trajectory_optimizer_->Plan(
@@ -334,6 +368,7 @@ void OpenSpaceTrajectoryProvider::GenerateTrajectoryThread() {
   }
 }
 
+// 通过比较车辆与终点的角度与距离以及车速来判断车辆是否到达终点。
 bool OpenSpaceTrajectoryProvider::IsVehicleNearDestination(
     const common::VehicleState& vehicle_state,
     const std::vector<double>& end_pose, double rotate_angle,
@@ -387,9 +422,11 @@ bool OpenSpaceTrajectoryProvider::IsVehicleNearDestination(
 
 bool OpenSpaceTrajectoryProvider::IsVehicleStopDueToFallBack(
     const bool is_on_fallback, const common::VehicleState& vehicle_state) {
+  // 是否task处于fallback状态
   if (!is_on_fallback) {
     return false;
   }
+  // 如果线速度小于阈值，返回true
   static constexpr double kEpsilon = 1.0e-1;
   const double adc_speed = vehicle_state.linear_velocity();
   if (std::abs(adc_speed) < kEpsilon) {
@@ -400,6 +437,7 @@ bool OpenSpaceTrajectoryProvider::IsVehicleStopDueToFallBack(
   return false;
 }
 
+// 当车辆到达规划终点、开放空间轨迹计算中或PARK_AND_GO_CHECK阶段时，调用该函数生成停车轨迹。
 void OpenSpaceTrajectoryProvider::GenerateStopTrajectory(
     DiscretizedTrajectory* const trajectory_data) {
   double relative_time = 0.0;

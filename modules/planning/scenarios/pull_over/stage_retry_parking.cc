@@ -34,6 +34,7 @@ namespace planning {
 
 using apollo::common::TrajectoryPoint;
 
+// 上一阶段靠近停车点后，进入该阶段实线停车。
 StageResult PullOverStageRetryParking::Process(
     const TrajectoryPoint& planning_init_point, Frame* frame) {
   ADEBUG << "stage: RetryParking";
@@ -42,6 +43,8 @@ StageResult PullOverStageRetryParking::Process(
 
   // Open space planning doesn't use planning_init_point from upstream because
   // of different stitching strategy
+
+  // 按序执行open_space相关task
   frame->mutable_open_space_info()->set_is_on_open_space_trajectory(true);
   StageResult result = ExecuteTaskOnOpenSpace(frame);
   if (result.HasError()) {
@@ -49,21 +52,24 @@ StageResult PullOverStageRetryParking::Process(
     return result.SetStageStatus(StageStatusType::ERROR);
   }
 
-  // set debug info in planning_data
-  const auto& pull_over_status =
-      injector_->planning_context()->planning_status().pull_over();
-  auto* pull_over_debug = frame->mutable_open_space_info()
-                              ->mutable_debug()
-                              ->mutable_planning_data()
-                              ->mutable_pull_over();
-  pull_over_debug->mutable_position()->CopyFrom(pull_over_status.position());
-  pull_over_debug->set_theta(pull_over_status.theta());
-  pull_over_debug->set_length_front(pull_over_status.length_front());
-  pull_over_debug->set_length_back(pull_over_status.length_back());
-  pull_over_debug->set_width_left(pull_over_status.width_left());
-  pull_over_debug->set_width_right(pull_over_status.width_right());
-  frame->mutable_open_space_info()->sync_debug_instance();
 
+
+  // set debug info in planning_data
+  // const auto& pull_over_status =
+  //     injector_->planning_context()->planning_status().pull_over();
+  // auto* pull_over_debug = frame->mutable_open_space_info()
+  //                             ->mutable_debug()
+  //                             ->mutable_planning_data()
+  //                             ->mutable_pull_over();
+  // pull_over_debug->mutable_position()->CopyFrom(pull_over_status.position());
+  // pull_over_debug->set_theta(pull_over_status.theta());
+  // pull_over_debug->set_length_front(pull_over_status.length_front());
+  // pull_over_debug->set_length_back(pull_over_status.length_back());
+  // pull_over_debug->set_width_left(pull_over_status.width_left());
+  // pull_over_debug->set_width_right(pull_over_status.width_right());
+  // frame->mutable_open_space_info()->sync_debug_instance();
+
+  // 判断是否已经完成靠边停车
   if (CheckADCPullOverOpenSpace()) {
     return FinishStage();
   }
@@ -76,6 +82,8 @@ StageResult PullOverStageRetryParking::FinishStage() {
 }
 
 bool PullOverStageRetryParking::CheckADCPullOverOpenSpace() {
+
+  // 如果不在Pull_over流程，返回false
   const auto& pull_over_status =
       injector_->planning_context()->planning_status().pull_over();
   if (!pull_over_status.has_position() ||
@@ -86,6 +94,7 @@ bool PullOverStageRetryParking::CheckADCPullOverOpenSpace() {
     return false;
   }
 
+  // 如果距离和角度在阈值内，返回true
   const common::math::Vec2d adc_position = {injector_->vehicle_state()->x(),
                                             injector_->vehicle_state()->y()};
   const common::math::Vec2d target_position = {pull_over_status.position().x(),

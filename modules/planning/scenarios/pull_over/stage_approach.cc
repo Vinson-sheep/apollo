@@ -43,23 +43,30 @@ StageResult PullOverStageApproach::Process(
   CHECK_NOTNULL(frame);
   CHECK_NOTNULL(context_);
 
+  // 获取scenario配置
   const ScenarioPullOverConfig& scenario_config =
       GetContextAs<PullOverContext>()->scenario_config;
 
+  // 按序执行task
   StageResult result = ExecuteTaskOnReferenceLine(planning_init_point, frame);
   if (result.HasError()) {
     AERROR << "PullOverStageApproach planning error";
   }
 
+  // 检查自车是否到达目标位置
+  // 仅考虑第一条参考线
   const auto& reference_line_info = frame->reference_line_info().front();
   PullOverState state =
       CheckADCPullOver(injector_->vehicle_state(), reference_line_info,
                        scenario_config, injector_->planning_context());
 
+  // 如果已经超过目标位置，或者已经完成停车，该stage结束
   if (state == PullOverState::PASS_DESTINATION ||
       state == PullOverState::PARK_COMPLETE) {
     return FinishStage(true);
-  } else if (state == PullOverState::PARK_FAIL) {
+  } 
+  // 否则，直接跳过当前stage
+  else if (state == PullOverState::PARK_FAIL) {
     return FinishStage(false);
   }
 
@@ -67,11 +74,16 @@ StageResult PullOverStageApproach::Process(
   bool path_fail = false;
   const auto& candidate_path_data = reference_line_info.GetCandidatePathData();
   if (!candidate_path_data.empty()) {
+
+    // 遍历所有候选sl路径
     for (const auto& path_data : candidate_path_data) {
+
+      // 如果已经找到了安全的pull_over路径，直接结束for循环
       if (path_data.path_label().find("pullover") == std::string::npos) {
         break;
       }
 
+      // 循环判断path是否真的能到达停车点
       const double min_distance_to_end = FLAGS_path_bounds_decider_resolution *
                                          FLAGS_num_extra_tail_bound_point;
       for (size_t i = path_data.discretized_path().size(); i >= 1; --i) {
@@ -80,11 +92,14 @@ StageResult PullOverStageApproach::Process(
             min_distance_to_end) {
           continue;
         }
+        // 针对单个离散点判断车辆是否能到达停车点
         // check the last adc_position planned
         const auto& path_point = path_data.discretized_path()[i];
         PullOverState state = CheckADCPullOverPathPoint(
             reference_line_info, scenario_config, path_point,
             injector_->planning_context());
+
+        // 如果路径有问题，停车点不可达
         if (state == PullOverState::PARK_FAIL) {
           path_fail = true;
         }
@@ -93,6 +108,7 @@ StageResult PullOverStageApproach::Process(
     }
   }
 
+  // 如果规划出来的路径不能到达停车点
   // add a stop fence for adc to pause at a better position
   if (path_fail) {
     const auto& pull_over_status =
@@ -126,6 +142,8 @@ StageResult PullOverStageApproach::Process(
       auto ref_point = reference_line.GetReferencePoint(adc_front_edge_s);
       double angle = common::math::AngleDiff(pull_over_status.theta(),
                                              ref_point.heading());
+
+      // 如果车辆快要到达停车点，提前结束stage
       if (distance <= kPreparkingStopDistance &&
           angle <= kPreparkingAngleDiff) {
         return FinishStage(false);

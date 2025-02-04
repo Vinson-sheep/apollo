@@ -576,6 +576,7 @@ void Frame::ResetPadMsgDrivingAction() {
 }
 
 const ReferenceLineInfo *Frame::FindDriveReferenceLineInfo() {
+  // 遍历所有参考线，找出代价最小的轨迹
   double min_cost = std::numeric_limits<double>::infinity();
   drive_reference_line_info_ = nullptr;
   for (const auto &reference_line_info : reference_line_info_) {
@@ -589,6 +590,7 @@ const ReferenceLineInfo *Frame::FindDriveReferenceLineInfo() {
 }
 
 const ReferenceLineInfo *Frame::FindTargetReferenceLineInfo() {
+  // 寻找变道参考线
   const ReferenceLineInfo *target_reference_line_info = nullptr;
   for (const auto &reference_line_info : reference_line_info_) {
     if (reference_line_info.IsChangeLanePath()) {

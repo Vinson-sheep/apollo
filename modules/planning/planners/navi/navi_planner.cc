@@ -73,6 +73,9 @@ void NaviPlanner::RegisterTasks() {
                          []() -> NaviTask* { return new NaviSpeedDecider(); });
 }
 
+// NaviPlanner是基于相对地图的规划器，主要用于高速公路场景。
+// 它主要考虑实际临时或者移动障碍物，并考虑速度和动力学约束的情况下，尽量按照规划路径进行轨迹规划。
+
 Status NaviPlanner::Init(const std::shared_ptr<DependencyInjector>& injector,
                          const std::string& config_path) {
   Planner::Init(injector, config_path);
@@ -173,17 +176,17 @@ Status NaviPlanner::PlanOnReferenceLine(
              << "], Error message: " << ret.error_message();
       break;
     }
-    const double end_timestamp = Clock::NowInSeconds();
-    const double time_diff_ms = (end_timestamp - start_timestamp) * 1000;
+    // const double end_timestamp = Clock::NowInSeconds();
+    // const double time_diff_ms = (end_timestamp - start_timestamp) * 1000;
 
-    ADEBUG << "after task " << task->Name() << ":"
-           << reference_line_info->PathSpeedDebugString();
-    ADEBUG << task->Name() << " time spend: " << time_diff_ms << " ms.";
+    // ADEBUG << "after task " << task->Name() << ":"
+    //        << reference_line_info->PathSpeedDebugString();
+    // ADEBUG << task->Name() << " time spend: " << time_diff_ms << " ms.";
 
-    RecordDebugInfo(reference_line_info, task->Name(), time_diff_ms);
+    // RecordDebugInfo(reference_line_info, task->Name(), time_diff_ms);
   }
 
-  RecordObstacleDebugInfo(reference_line_info);
+  // RecordObstacleDebugInfo(reference_line_info);
 
   if (reference_line_info->path_data().Empty()) {
     ADEBUG << "Path fallback.";

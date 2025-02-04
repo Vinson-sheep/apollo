@@ -59,7 +59,12 @@ bool OpenSpaceRoiDecider::Init(
   return res;
 }
 
+// 用于在开放空间算法中生成可行驶边界，根据规划场景的不同，如：泊车、靠边停车、驶入主路，
+// 以当前车辆位置为坐标原点，生成不同的可行驶边界与目标点。
+// ROI：Region of Interest
 Status OpenSpaceRoiDecider::Process(Frame *frame) {
+
+  // 安全性检查
   if (frame == nullptr) {
     const std::string msg =
         "Invalid frame, fail to process the OpenSpaceRoiDecider.";
@@ -72,14 +77,22 @@ Status OpenSpaceRoiDecider::Process(Frame *frame) {
 
   std::array<Vec2d, 4> spot_vertices;
   Path nearby_path;
+
+
+  // 由逆时针的顶点组成的停车区域
   // @brief vector of different obstacle consisting of vertice points.The
   // obstacle and the vertices order are in counter-clockwise order
   std::vector<std::vector<common::math::Vec2d>> roi_boundary;
 
+
+  // 根据不同的任务类型提取ROI
+
   const auto &roi_type = config_.roi_type();
+
   if (roi_type == OpenSpaceRoiDeciderConfig::PARKING) {
     target_parking_spot_id_ = frame->open_space_info().target_parking_spot_id();
     ParkingInfo parking_info;
+
     if (!GetParkingSpot(frame, &parking_info)) {
       const std::string msg = "Fail to get parking boundary from map";
       AERROR << msg;
@@ -93,30 +106,40 @@ Status OpenSpaceRoiDecider::Process(Frame *frame) {
 
     SetParkingSpotEndPose(parking_info, frame);
 
+  
     if (!GetParkingBoundary(parking_info, *nearby_path_, frame,
                             &roi_boundary)) {
       const std::string msg = "Fail to get parking boundary from map";
       AERROR << msg;
       return Status(ErrorCode::PLANNING_ERROR, msg);
     }
-  } else if (roi_type == OpenSpaceRoiDeciderConfig::PULL_OVER) {
+  } 
+  
+  // 靠边停车
+  else if (roi_type == OpenSpaceRoiDeciderConfig::PULL_OVER) {
+
+    // 函数计算了靠边停车目标点的位姿，生成了目标停车边界框。
     if (!GetPullOverSpot(frame, &spot_vertices, &nearby_path)) {
       const std::string msg = "Fail to get parking boundary from map";
       AERROR << msg;
       return Status(ErrorCode::PLANNING_ERROR, msg);
     }
 
+    // 将目标点位姿转换为以目标车位左上角为原点的坐标系下，并将目标位姿存入frame中。
     SetOrigin(frame, spot_vertices);
-
     SetPullOverSpotEndPose(frame);
 
+    // 该函数根据目标点车位在道路上的位置，计算出目标车位道路的左右边界，
+    // 而后生成开放空间算法边界。
     if (!GetPullOverBoundary(frame, spot_vertices, nearby_path,
                              &roi_boundary)) {
       const std::string msg = "Fail to get parking boundary from map";
       AERROR << msg;
       return Status(ErrorCode::PLANNING_ERROR, msg);
     }
-  } else if (roi_type == OpenSpaceRoiDeciderConfig::PARK_AND_GO) {
+  } 
+  
+  else if (roi_type == OpenSpaceRoiDeciderConfig::PARK_AND_GO) {
     ADEBUG << "in Park_and_Go";
     nearby_path =
         frame->reference_line_info().front().reference_line().GetMapPath();
@@ -166,6 +189,8 @@ Status OpenSpaceRoiDecider::Process(Frame *frame) {
     AERROR << msg;
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
+
+  // 构造Ax > b约束
   if (!FormulateBoundaryConstraints(roi_boundary, frame)) {
     const std::string msg = "Fail to formulate boundary constraints";
     AERROR << msg;
@@ -227,6 +252,8 @@ void OpenSpaceRoiDecider::SetOrigin(
   auto right_top = vertices[3];
   // rotate the points to have the lane to be horizontal to x axis positive
   // direction and scale them base on the origin point
+
+  // 设置左上角的点为原点
   Vec2d heading_vec = right_top - left_top;
   frame->mutable_open_space_info()->set_origin_heading(heading_vec.Angle());
   frame->mutable_open_space_info()->mutable_origin_point()->set_x(left_top.x());
@@ -314,6 +341,7 @@ void OpenSpaceRoiDecider::SetPullOverSpotEndPose(Frame *const frame) {
   pull_over_theta =
       common::math::NormalizeAngle(pull_over_theta - origin_heading);
 
+  // 设置以左上角为原点的目标位姿
   auto *end_pose =
       frame->mutable_open_space_info()->mutable_open_space_end_pose();
   end_pose->push_back(center.x());
@@ -407,9 +435,12 @@ void OpenSpaceRoiDecider::GetRoadBoundary(
     std::vector<double> *center_lane_s_right,
     std::vector<double> *left_lane_road_width,
     std::vector<double> *right_lane_road_width) {
-  double start_s = center_line_s - config_.roi_longitudinal_range_start();
+
+  // 计算目标停车位s轴区间
+  double start_s = center_line_s - config_.roi_longitudinal_range_start(); // 15
   double end_s = center_line_s + config_.roi_longitudinal_range_end();
 
+  // 
   hdmap::MapPathPoint start_point = nearby_path.GetSmoothPoint(start_s);
   double last_check_point_heading = start_point.heading();
   double index = 0.0;
@@ -419,9 +450,15 @@ void OpenSpaceRoiDecider::GetRoadBoundary(
   // separately. Iterate s_value to check key points at a step of
   // roi_line_segment_length. Key points include: start_point, end_point, points
   // where path curvature is large, points near left/right road-curb corners
+
+  // 从前往后遍历车位上的s点
   while (check_point_s <= end_s) {
+
+    // 提取xy点和朝向
     hdmap::MapPathPoint check_point = nearby_path.GetSmoothPoint(check_point_s);
     double check_point_heading = check_point.heading();
+
+    // 如果朝向与上一个点的变化太大，说明路径有问题
     bool is_center_lane_heading_change =
         std::abs(common::math::NormalizeAngle(check_point_heading -
                                               last_check_point_heading)) >
@@ -433,26 +470,37 @@ void OpenSpaceRoiDecider::GetRoadBoundary(
     // Check if the current center-lane checking-point is start point || end
     // point || or point with larger curvature. If yes, mark it as an anchor
     // point.
+
+    // 判断是否是停车位的端点
     bool is_anchor_point = check_point_s == start_s || check_point_s == end_s ||
                            is_center_lane_heading_change;
+
+    // 提取道路中心点和靠边停车侧路边的信息
+
+    // 道路中心左侧信息
     // Add key points to the left-half boundary
     AddBoundaryKeyPoint(nearby_path, check_point_s, start_s, end_s,
                         is_anchor_point, true, center_lane_boundary_left,
                         left_lane_boundary, center_lane_s_left,
                         left_lane_road_width);
+
+    // 道路中心右侧信息
     // Add key points to the right-half boundary
     AddBoundaryKeyPoint(nearby_path, check_point_s, start_s, end_s,
                         is_anchor_point, false, center_lane_boundary_right,
                         right_lane_boundary, center_lane_s_right,
                         right_lane_road_width);
+
     if (check_point_s == end_s) {
       break;
     }
+
     index += 1.0;
-    check_point_s = start_s + index * config_.roi_line_segment_length();
+    check_point_s = start_s + index * config_.roi_line_segment_length(); // 1.0 / 0.2
     check_point_s = check_point_s >= end_s ? end_s : check_point_s;
   }
 
+  // 左右车道宽信息全部修正到origin_point和origin_heading坐标系
   size_t left_point_size = left_lane_boundary->size();
   size_t right_point_size = right_lane_boundary->size();
   for (size_t i = 0; i < left_point_size; i++) {
@@ -583,6 +631,7 @@ void OpenSpaceRoiDecider::GetRoadBoundaryFromMap(
   }
 }
 
+// 提取道路中心点和靠边停车侧路边的信息
 void OpenSpaceRoiDecider::AddBoundaryKeyPoint(
     const hdmap::Path &nearby_path, const double check_point_s,
     const double start_s, const double end_s, const bool is_anchor_point,
@@ -612,27 +661,39 @@ void OpenSpaceRoiDecider::AddBoundaryKeyPoint(
   // TODO(SHU): 1. consider distortion introduced by curvy road; 2. use both
   // round boundaries for single-track road; 3. longitudinal range may not be
   // symmetric
+
+  // 计算前半部分s和后半部分s
   const double previous_distance_s =
       std::min(config_.roi_line_segment_length(), check_point_s - start_s);
   const double next_distance_s =
       std::min(config_.roi_line_segment_length(), end_s - check_point_s);
 
+  // 提取检查点的xy坐标
   hdmap::MapPathPoint current_check_point =
       nearby_path.GetSmoothPoint(check_point_s);
 
+  // 获取朝向和靠边侧宽
   double current_check_point_heading = current_check_point.heading();
   double current_road_width =
       is_left_curb ? nearby_path.GetRoadLeftWidth(check_point_s)
                    : nearby_path.GetRoadRightWidth(check_point_s);
+
+  // 如果是检查点的端点
   // If the current center-lane checking point is an anchor point, then add
   // current left/right curb boundary point as a key point
   if (is_anchor_point) {
+
+    // 计算heading的cos
     double point_vec_cos =
         is_left_curb ? std::cos(current_check_point_heading + M_PI / 2.0)
                      : std::cos(current_check_point_heading - M_PI / 2.0);
+    
+    // 计算heading的sin
     double point_vec_sin =
         is_left_curb ? std::sin(current_check_point_heading + M_PI / 2.0)
                      : std::sin(current_check_point_heading - M_PI / 2.0);
+    
+    
     Vec2d curb_lane_point = Vec2d(current_road_width * point_vec_cos,
                                   current_road_width * point_vec_sin);
     curb_lane_point = curb_lane_point + current_check_point;
@@ -642,6 +703,7 @@ void OpenSpaceRoiDecider::AddBoundaryKeyPoint(
     road_width->push_back(current_road_width);
     return;
   }
+
   double previous_road_width =
       is_left_curb
           ? nearby_path.GetRoadLeftWidth(check_point_s - previous_distance_s)
@@ -970,14 +1032,18 @@ bool OpenSpaceRoiDecider::GetPullOverBoundary(
     Frame *const frame, const std::array<common::math::Vec2d, 4> &vertices,
     const hdmap::Path &nearby_path,
     std::vector<std::vector<common::math::Vec2d>> *const roi_parking_boundary) {
+
+  // 提取停车位的四个角
   auto left_top = vertices[0];
   auto left_down = vertices[1];
   auto right_down = vertices[2];
   auto right_top = vertices[3];
 
+  // 提取停车位原点和朝向
   const auto &origin_point = frame->open_space_info().origin_point();
   const auto &origin_heading = frame->open_space_info().origin_heading();
 
+  // 将左上角和右上角的点投影到附近的参考线
   double left_top_s = 0.0;
   double left_top_l = 0.0;
   double right_top_s = 0.0;
@@ -988,6 +1054,7 @@ bool OpenSpaceRoiDecider::GetPullOverBoundary(
     return false;
   }
 
+  // 将停车位修正到origin_point坐标系，并计算实际xy位置
   left_top -= origin_point;
   left_top.SelfRotate(-origin_heading);
   left_down -= origin_point;
@@ -1007,12 +1074,14 @@ bool OpenSpaceRoiDecider::GetPullOverBoundary(
   std::vector<double> left_lane_road_width;
   std::vector<double> right_lane_road_width;
 
+  // 提取左右车道宽信息，并转换到新坐标系下
   GetRoadBoundary(nearby_path, center_line_s, origin_point, origin_heading,
                   &left_lane_boundary, &right_lane_boundary,
                   &center_lane_boundary_left, &center_lane_boundary_right,
                   &center_lane_s_left, &center_lane_s_right,
                   &left_lane_road_width, &right_lane_road_width);
 
+  // 构造逆时针顺序的停车位边界(left_lane_boundary)
   // Load boundary as line segments in counter-clockwise order
   std::reverse(left_lane_boundary.begin(), left_lane_boundary.end());
 
@@ -1022,6 +1091,7 @@ bool OpenSpaceRoiDecider::GetPullOverBoundary(
   std::copy(left_lane_boundary.begin(), left_lane_boundary.end(),
             std::back_inserter(boundary_points));
 
+  // 构造逆时针顺序的停车位边界(roi_parking_boundary)
   size_t right_lane_boundary_last_index = right_lane_boundary.size() - 1;
   for (size_t i = 0; i < right_lane_boundary_last_index; i++) {
     std::vector<Vec2d> segment{right_lane_boundary[i],
@@ -1036,10 +1106,16 @@ bool OpenSpaceRoiDecider::GetPullOverBoundary(
     roi_parking_boundary->push_back(segment);
   }
 
+  // 将不规则边界变换为凸边界
+  // 但这样的凸边界会导致安全性问题？
   // Fuse line segments into convex contraints
   if (!FuseLineSegments(roi_parking_boundary)) {
     return false;
   }
+
+  // 后续只是做简单校验，不会再更新roi_parking_boundary
+
+  // 获取所有边界点的最大最小xy，构造xy边界
   // Get xy boundary
   auto xminmax = std::minmax_element(
       boundary_points.begin(), boundary_points.end(),
@@ -1053,6 +1129,7 @@ bool OpenSpaceRoiDecider::GetPullOverBoundary(
       frame->mutable_open_space_info()->mutable_ROI_xy_boundary();
   xy_boundary->assign(ROI_xy_boundary.begin(), ROI_xy_boundary.end());
 
+  // 如果自车不在xy边界内，报错
   Vec2d vehicle_xy = Vec2d(vehicle_state_.x(), vehicle_state_.y());
   vehicle_xy -= origin_point;
   vehicle_xy.SelfRotate(-origin_heading);
@@ -1063,6 +1140,7 @@ bool OpenSpaceRoiDecider::GetPullOverBoundary(
     AERROR << "vehicle outside of xy boundary of parking ROI";
     return false;
   }
+
   return true;
 }
 
@@ -1258,6 +1336,8 @@ bool OpenSpaceRoiDecider::GetParkingSpot(Frame *const frame,
 bool OpenSpaceRoiDecider::GetPullOverSpot(
     Frame *const frame, std::array<common::math::Vec2d, 4> *vertices,
     hdmap::Path *nearby_path) {
+
+  // 如果pull_over_status不存在停车点，返回false
   const auto &pull_over_status =
       injector_->planning_context()->planning_status().pull_over();
   if (!pull_over_status.has_position() ||
@@ -1267,15 +1347,18 @@ bool OpenSpaceRoiDecider::GetPullOverSpot(
     return false;
   }
 
+  // 如果参考线不合法，返回false
   if (frame->reference_line_info().size() > 1) {
     AERROR << "Should not be in pull over when changing lane in open space "
               "planning";
     return false;
   }
 
+  // 提取参考线
   *nearby_path =
       frame->reference_line_info().front().reference_line().GetMapPath();
 
+  // 提取停止点矩形对应的四个点
   // Construct left_top, left_down, right_down, right_top points
   double pull_over_x = pull_over_status.position().x();
   double pull_over_y = pull_over_status.position().y();
@@ -1309,6 +1392,7 @@ bool OpenSpaceRoiDecider::GetPullOverSpot(
   Vec2d right_down(pull_over_x + dx1 - dx2, pull_over_y + dy1 - dy2);
   Vec2d right_top(pull_over_x + dx1 + dx2, pull_over_y + dy1 + dy2);
 
+  // 点是有顺序的
   std::array<Vec2d, 4> pull_over_vertices{left_top, left_down, right_down,
                                           right_top};
   *vertices = std::move(pull_over_vertices);
@@ -1329,26 +1413,38 @@ void OpenSpaceRoiDecider::SearchTargetParkingSpotOnPath(
   }
 }
 
+// 将逆时针构造的不规则边界变换为凸边界
 bool OpenSpaceRoiDecider::FuseLineSegments(
     std::vector<std::vector<common::math::Vec2d>> *line_segments_vec) {
+
   static constexpr double kEpsilon = 1.0e-8;
   auto cur_segment = line_segments_vec->begin();
+
+  // 遍历线段
   while (cur_segment != line_segments_vec->end() - 1) {
     auto next_segment = cur_segment + 1;
     auto cur_last_point = cur_segment->back();
     auto next_first_point = next_segment->front();
     // Check if they are the same points
+
+    // 一般来说，前后线段首尾相同，否则，必定有问题
     if (cur_last_point.DistanceTo(next_first_point) > kEpsilon) {
       ++cur_segment;
       continue;
     }
+
+    // 如果线段只有一个点，不合法，返回false
     if (cur_segment->size() < 2 || next_segment->size() < 2) {
       AERROR << "Single point line_segments vec not expected";
       return false;
     }
+
+    // 提取A段倒数第二个点和B段正序第二个点
     size_t cur_segments_size = cur_segment->size();
     auto cur_second_to_last_point = cur_segment->at(cur_segments_size - 2);
     auto next_second_point = next_segment->at(1);
+
+    // 如果叉积为负，说明这三个点构成一个右转（顺时针方向），表明当前线段和下一个线段可以合并
     if (CrossProd(cur_second_to_last_point, cur_last_point, next_second_point) <
         0.0) {
       cur_segment->push_back(next_second_point);
@@ -1366,11 +1462,14 @@ bool OpenSpaceRoiDecider::FuseLineSegments(
 bool OpenSpaceRoiDecider::FormulateBoundaryConstraints(
     const std::vector<std::vector<common::math::Vec2d>> &roi_parking_boundary,
     Frame *const frame) {
+  // 将停车位障碍物和感知障碍物进行融合，将数据存放在frame中
   // Gather vertice needed by warm start and distance approach
   if (!LoadObstacleInVertices(roi_parking_boundary, frame)) {
     AERROR << "fail at LoadObstacleInVertices()";
     return false;
   }
+  // 
+  // 构造Ax > b
   // Transform vertices into the form of Ax>b
   if (!LoadObstacleInHyperPlanes(frame)) {
     AERROR << "fail at LoadObstacleInHyperPlanes()";
@@ -1379,13 +1478,20 @@ bool OpenSpaceRoiDecider::FormulateBoundaryConstraints(
   return true;
 }
 
+// 将停车位障碍物和感知障碍物进行融合，将数据存放在frame中
 bool OpenSpaceRoiDecider::LoadObstacleInVertices(
     const std::vector<std::vector<common::math::Vec2d>> &roi_parking_boundary,
     Frame *const frame) {
+
+  //
   auto *mutable_open_space_info = frame->mutable_open_space_info();
   const auto &open_space_info = frame->open_space_info();
+
+  // 输出1：多个障碍物的顶点集合，停车位每条边为一个障碍物，单个感知障碍物为一个障碍物
   auto *obstacles_vertices_vec =
       mutable_open_space_info->mutable_obstacles_vertices_vec();
+
+  // 输出2：每个障碍物顶点的数目集合
   auto *obstacles_edges_num_vec =
       mutable_open_space_info->mutable_obstacles_edges_num();
 
@@ -1394,10 +1500,12 @@ bool OpenSpaceRoiDecider::LoadObstacleInVertices(
   size_t parking_boundaries_num = roi_parking_boundary.size();
   size_t perception_obstacles_num = 0;
 
+  // 将已有的停车位顶点插入到obstacles_vertices_vec
   for (size_t i = 0; i < parking_boundaries_num; ++i) {
     obstacles_vertices_vec->push_back(roi_parking_boundary[i]);
   }
 
+  // 计算停车位障碍物边数，存放到parking_boundaries_obstacles_edges_num
   Eigen::MatrixXi parking_boundaries_obstacles_edges_num(parking_boundaries_num,
                                                          1);
   for (size_t i = 0; i < parking_boundaries_num; i++) {
@@ -1407,28 +1515,34 @@ bool OpenSpaceRoiDecider::LoadObstacleInVertices(
       return false;
     }
     parking_boundaries_obstacles_edges_num(i, 0) =
-        static_cast<int>(roi_parking_boundary[i].size()) - 1;
+        static_cast<int>(roi_parking_boundary[i].size()) - 1; // 定点数-1 ？
   }
 
+  // 如果考虑感知障碍物
   if (config_.enable_perception_obstacles()) {
     if (perception_obstacles_num == 0) {
       ADEBUG << "no obstacle given by perception";
     }
 
+    // 遍历所有障碍物，提取障碍物顶点和边数目
     // load vertices for perception obstacles(repeat the first vertice at the
     // last to form closed convex hull)
     const auto &origin_point = open_space_info.origin_point();
     const auto &origin_heading = open_space_info.origin_heading();
     for (const auto &obstacle : obstacles_by_frame_->Items()) {
+
+      // 忽略静态、虚拟和较远的障碍物
       if (FilterOutObstacle(*frame, *obstacle)) {
         continue;
       }
       ++perception_obstacles_num;
 
+      // 提取逆时针的障碍物顶点
       std::vector<Vec2d> vertices_ccw;
       if (config_.expand_polygon_of_obstacle_by_distance()) {
         common::math::Polygon2d original_polygon =
             obstacle->PerceptionPolygon();
+        // 膨胀障碍物边界
         original_polygon.ExpandByDistance(config_.perception_obstacle_buffer());
         original_polygon.CalculateVertices(-1.0 * origin_point);
         vertices_ccw = original_polygon.GetAllVertices();
@@ -1447,6 +1561,7 @@ bool OpenSpaceRoiDecider::LoadObstacleInVertices(
       // TODO(Runxin): Rotate from origin instead
       // original_box.RotateFromCenter(-1.0 * origin_heading);
 
+      // 提取顺时针的障碍物顶点
       std::vector<Vec2d> vertices_cw;
       while (!vertices_ccw.empty()) {
         auto current_corner_pt = vertices_ccw.back();
@@ -1457,7 +1572,11 @@ bool OpenSpaceRoiDecider::LoadObstacleInVertices(
       // As the perception obstacle is a closed convex set, the first vertice
       // is repeated at the end of the vector to help transform all four edges
       // to inequality constraint
+
+      // 形成闭环
       vertices_cw.push_back(vertices_cw.front());
+
+      // 插入顺时针障碍物
       obstacles_vertices_vec->push_back(vertices_cw);
     }
 
@@ -1472,12 +1591,15 @@ bool OpenSpaceRoiDecider::LoadObstacleInVertices(
     *(obstacles_edges_num_vec) << parking_boundaries_obstacles_edges_num,
         perception_obstacles_edges_num;
 
-  } else {
+  } 
+  // 如果不考虑感知障碍物，直接赋值到obstacles_edges_num_vec
+  else {
     obstacles_edges_num_vec->resize(
         parking_boundaries_obstacles_edges_num.rows(), 1);
     *(obstacles_edges_num_vec) << parking_boundaries_obstacles_edges_num;
   }
 
+  // 总障碍物数目 = 停车位障碍物和感知障碍物
   mutable_open_space_info->set_obstacles_num(parking_boundaries_num +
                                              perception_obstacles_num);
   return true;
@@ -1485,10 +1607,13 @@ bool OpenSpaceRoiDecider::LoadObstacleInVertices(
 
 bool OpenSpaceRoiDecider::FilterOutObstacle(const Frame &frame,
                                             const Obstacle &obstacle) {
+  
+  // 忽略虚拟障碍物和静态障碍物
   if (obstacle.IsVirtual() || !obstacle.IsStatic()) {
     return true;
   }
 
+  // 如果障碍物不在roi_xy_boundary边界内，不考虑
   const auto &open_space_info = frame.open_space_info();
   const auto &origin_point = open_space_info.origin_point();
   const auto &origin_heading = open_space_info.origin_heading();
@@ -1522,6 +1647,8 @@ bool OpenSpaceRoiDecider::FilterOutObstacle(const Frame &frame,
       obstacle_box.DistanceTo(end_pose_x_y);
   const double filtering_distance =
       config_.perception_obstacle_filtering_distance();
+  
+  // 如果障碍物距离自车或者停车点比较远，也可以忽略
   if (vehicle_center_to_obstacle > filtering_distance &&
       end_pose_center_to_obstacle > filtering_distance) {
     return true;
@@ -1530,6 +1657,8 @@ bool OpenSpaceRoiDecider::FilterOutObstacle(const Frame &frame,
 }
 
 bool OpenSpaceRoiDecider::LoadObstacleInHyperPlanes(Frame *const frame) {
+
+  // 这里直接把Ax > b 存放在frame中
   *(frame->mutable_open_space_info()->mutable_obstacles_A()) =
       Eigen::MatrixXd::Zero(
           frame->open_space_info().obstacles_edges_num().sum(), 2);
@@ -1549,33 +1678,42 @@ bool OpenSpaceRoiDecider::LoadObstacleInHyperPlanes(Frame *const frame) {
   return true;
 }
 
+// 构造Ax > b
 bool OpenSpaceRoiDecider::GetHyperPlanes(
     const size_t &obstacles_num, const Eigen::MatrixXi &obstacles_edges_num,
     const std::vector<std::vector<Vec2d>> &obstacles_vertices_vec,
     Eigen::MatrixXd *A_all, Eigen::MatrixXd *b_all) {
+  
+  // 安全校验
   if (obstacles_num != obstacles_vertices_vec.size()) {
     AERROR << "obstacles_num != obstacles_vertices_vec.size()";
     return false;
   }
 
-  A_all->resize(obstacles_edges_num.sum(), 2);
+  A_all->resize(obstacles_edges_num.sum(), 2); // 二维
   b_all->resize(obstacles_edges_num.sum(), 1);
 
   int counter = 0;
   double kEpsilon = 1.0e-5;
   // start building H representation
+  // 遍历所有障碍物
   for (size_t i = 0; i < obstacles_num; ++i) {
+
+    // 初始化Ax <= b
     size_t current_vertice_num = obstacles_edges_num(i, 0);
     Eigen::MatrixXd A_i(current_vertice_num, 2);
     Eigen::MatrixXd b_i(current_vertice_num, 1);
 
     // take two subsequent vertices, and computer hyperplane
+    // 遍历每条边
     for (size_t j = 0; j < current_vertice_num; ++j) {
+
       Vec2d v1 = obstacles_vertices_vec[i][j];
       Vec2d v2 = obstacles_vertices_vec[i][j + 1];
 
       Eigen::MatrixXd A_tmp(2, 1), b_tmp(1, 1), ab(2, 1);
       // find hyperplane passing through v1 and v2
+      // 如果平面垂直于y轴
       if (std::abs(v1.x() - v2.x()) < kEpsilon) {
         if (v2.y() < v1.y()) {
           A_tmp << 1, 0;
@@ -1584,7 +1722,9 @@ bool OpenSpaceRoiDecider::GetHyperPlanes(
           A_tmp << -1, 0;
           b_tmp << -v1.x();
         }
-      } else if (std::abs(v1.y() - v2.y()) < kEpsilon) {
+      } 
+      // 如果平面垂直于x轴
+      else if (std::abs(v1.y() - v2.y()) < kEpsilon) {
         if (v1.x() < v2.x()) {
           A_tmp << 0, 1;
           b_tmp << v1.y();
@@ -1592,7 +1732,9 @@ bool OpenSpaceRoiDecider::GetHyperPlanes(
           A_tmp << 0, -1;
           b_tmp << -v1.y();
         }
-      } else {
+      } 
+      // 否则
+      else {
         Eigen::MatrixXd tmp1(2, 2);
         tmp1 << v1.x(), 1, v2.x(), 1;
         Eigen::MatrixXd tmp2(2, 1);

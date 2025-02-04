@@ -80,10 +80,13 @@ TrajectoryStitcher::ComputeReinitStitchingTrajectory(
   return std::vector<TrajectoryPoint>(1, reinit_point);
 }
 
+// 将过去轨迹变换到体坐标系下
 // only used in navigation mode
 void TrajectoryStitcher::TransformLastPublishedTrajectory(
     const double x_diff, const double y_diff, const double theta_diff,
     PublishableTrajectory* prev_trajectory) {
+
+  // 如果没有轨迹，直接跳过
   if (!prev_trajectory) {
     return;
   }

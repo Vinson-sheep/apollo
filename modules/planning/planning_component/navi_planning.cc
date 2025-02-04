@@ -59,12 +59,14 @@ NaviPlanning::~NaviPlanning() {
 std::string NaviPlanning::Name() const { return "navi_planning"; }
 
 Status NaviPlanning::Init(const PlanningConfig& config) {
+
   // 检查配置（没有任何处理）
   if (!CheckPlanningConfig(config)) {
     return Status(ErrorCode::PLANNING_ERROR,
                   "planning config error: " + config.DebugString());
   }
 
+  // 在PlanningBase::Init进行初始化，没有执行实质性内容
   PlanningBase::Init(config);
 
   // clear planning history
@@ -73,6 +75,10 @@ Status NaviPlanning::Init(const PlanningConfig& config) {
   // clear planning status
   injector_->planning_context()->mutable_planning_status()->Clear();
 
+  // 与on_lane_planning相比
+  // 缺少了reference_line_provider_和hdmap_
+
+  // 路径规划调度器
   LoadPlanner();
   if (!planner_) {
     return Status(
@@ -88,9 +94,12 @@ Status NaviPlanning::Init(const PlanningConfig& config) {
 Status NaviPlanning::InitFrame(const uint32_t sequence_num,
                                const TrajectoryPoint& planning_start_point,
                                const VehicleState& vehicle_state) {
+  // 将路径规划数据来源，规划起始点，车辆位置，参考线统一保存到frame，供后续算法使用
   frame_.reset(new Frame(sequence_num, local_view_, planning_start_point,
                          vehicle_state, reference_line_provider_.get()));
 
+  // 获取参考线和segments （最核心的函数）
+  // 为什么navi_planning还是依赖参考线
   std::list<ReferenceLine> reference_lines;
   std::list<hdmap::RouteSegments> segments;
   if (!reference_line_provider_->GetReferenceLines(&reference_lines,
@@ -100,6 +109,9 @@ Status NaviPlanning::InitFrame(const uint32_t sequence_num,
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
+// 首先是InitFrameData()，里面对hdmap、vehicle_state、obstacle、traffic_lights进行赋值
+  // 其次，构建ReferenceLineInfo结构，我之前提到过ReferenceLineInfo结构里包含了reference_lines信息，
+  // 还包括了vehicle_state、obstacles等信息。到这里，就构建完了Frame结构与ReferenceLineInfo结构体
   auto status = frame_->Init(
       injector_->vehicle_state(), reference_lines, segments,
       reference_line_provider_->FutureRouteWaypoints(), injector_->ego_info());
@@ -122,25 +134,29 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
   if (config_.has_reference_line_config()) {
     reference_line_config = &config_.reference_line_config();
   }
+
+  // 每一次运行都要初始化ReferenceLineProvider？
   // Prefer "std::make_unique" to direct use of "new".
   // Refer to "https://herbsutter.com/gotw/_102/" for details.
   reference_line_provider_ = std::make_unique<ReferenceLineProvider>(
       injector_->vehicle_state(), reference_line_config,
       local_view_.relative_map);
 
-  // localization
-  ADEBUG << "Get localization: "
-         << local_view_.localization_estimate->DebugString();
+  // // localization
+  // ADEBUG << "Get localization: "
+  //        << local_view_.localization_estimate->DebugString();
 
-  // chassis
-  ADEBUG << "Get chassis: " << local_view_.chassis->DebugString();
+  // // chassis
+  // ADEBUG << "Get chassis: " << local_view_.chassis->DebugString();
 
   Status status = injector_->vehicle_state()->Update(
       *local_view_.localization_estimate, *local_view_.chassis);
 
+  // 对原始定位数据进行简单过滤
   auto vehicle_config =
       ComputeVehicleConfigFromLocalization(*local_view_.localization_estimate);
 
+  // 如果前后帧都有合理的定位数据，将当前轨迹修正到当前体坐标下
   if (last_vehicle_config_.is_valid_ && vehicle_config.is_valid_) {
     auto x_diff_map = vehicle_config.x_ - last_vehicle_config_.x_;
     auto y_diff_map = vehicle_config.y_ - last_vehicle_config_.y_;
@@ -153,6 +169,7 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
 
     auto theta_diff = vehicle_config.theta_ - last_vehicle_config_.theta_;
 
+    // 将当前轨迹修正到当前体坐标下
     TrajectoryStitcher::TransformLastPublishedTrajectory(
         x_diff_veh, y_diff_veh, theta_diff, last_publishable_trajectory_.get());
   }
@@ -165,6 +182,8 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
   // differs only a small amount (20ms). When the different is too large, the
   // estimation is invalid.
   DCHECK_GE(start_timestamp, vehicle_state.timestamp());
+
+  // 如果当前时间戳和vehicle_state时间戳相差不大，使用自行车模型估计最新的位姿
   if (start_timestamp - vehicle_state.timestamp() <
       FLAGS_message_latency_threshold) {
     auto future_xy = injector_->vehicle_state()->EstimateFuturePosition(
@@ -178,6 +197,7 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
                         ->mutable_main_decision()
                         ->mutable_not_ready();
 
+  // 如果vehicle_state不合法，直接返回失败
   if (!status.ok() || !util::IsVehicleStateValid(vehicle_state)) {
     const std::string msg = "Update VehicleStateProvider failed";
     AERROR << msg;
@@ -191,6 +211,8 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
 
   const double planning_cycle_time = 1.0 / FLAGS_planning_loop_rate;
 
+  // 截取要拼接上一帧的轨迹点，用于后续拼接
+  // 获取拼接的轨迹点，本质上是按某种规则获取历史轨迹点
   std::vector<TrajectoryPoint> stitching_trajectory;
   std::string replan_reason;
   stitching_trajectory = TrajectoryStitcher::ComputeStitchingTrajectory(
@@ -199,6 +221,10 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
       last_publishable_trajectory_.get(), &replan_reason,
       *local_view_.control_interactive_msg);
 
+
+  // 初始化frame，重要信息，将拼接轨迹最后一个点作为路径规划起始点
+  // 此处调用reference_line_provider_生成参考线和参考线段
+  // 并将障碍物和目标速度关联到参考线，最后将参考线保存到frame
   const uint32_t frame_num = static_cast<uint32_t>(seq_num_++);
   status = InitFrame(frame_num, stitching_trajectory.back(), vehicle_state);
 
@@ -215,11 +241,13 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
 
   injector_->ego_info()->Update(stitching_trajectory.back(), vehicle_state);
 
-  if (FLAGS_enable_record_debug) {
-    frame_->RecordInputDebug(trajectory_pb->mutable_debug());
-  }
+  // if (FLAGS_enable_record_debug) {
+  //   frame_->RecordInputDebug(trajectory_pb->mutable_debug());
+  // }
   trajectory_pb->mutable_latency_stats()->set_init_frame_time_ms(
       Clock::NowInSeconds() - start_timestamp);
+
+  // 如果初始化frame失败，生成stop轨迹
   if (!status.ok()) {
     AERROR << status.ToString();
     if (FLAGS_publish_estop) {
@@ -259,9 +287,13 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
     ProcessPadMsg(pad_msg_driving_action);
   }
 
+  // 交通决策信息，对每条参考线做处理
+  // 可以查看traffic_rules下的交通决策
   for (auto& ref_line_info : *frame_->mutable_reference_line_info()) {
+    // 交通决策执行函数
     auto traffic_status =
         traffic_decider_.Execute(frame_.get(), &ref_line_info);
+    // 如果交通状态不OK，或者当前参考线不可行驶
     if (!traffic_status.ok() || !ref_line_info.IsDrivable()) {
       ref_line_info.SetDrivable(false);
       AWARN << "Reference line " << ref_line_info.Lanes().Id()
@@ -270,21 +302,24 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
     }
   }
 
+  // 路径规划主入口
   status = Plan(start_timestamp, stitching_trajectory, trajectory_pb);
 
   const auto time_diff_ms = (Clock::NowInSeconds() - start_timestamp) * 1000;
-  ADEBUG << "total planning time spend: " << time_diff_ms << " ms.";
+  // ADEBUG << "total planning time spend: " << time_diff_ms << " ms.";
 
   trajectory_pb->mutable_latency_stats()->set_total_time_ms(time_diff_ms);
-  ADEBUG << "Planning latency: "
-         << trajectory_pb->latency_stats().DebugString();
+  // ADEBUG << "Planning latency: "
+  //        << trajectory_pb->latency_stats().DebugString();
 
+  // ？？
   auto* ref_line_task =
       trajectory_pb->mutable_latency_stats()->add_task_stats();
   ref_line_task->set_time_ms(reference_line_provider_->LastTimeDelay() *
                              1000.0);
   ref_line_task->set_name("ReferenceLineProvider");
 
+  // 如果路径规划失败，设置e_stop
   if (!status.ok()) {
     status.Save(trajectory_pb->mutable_header()->mutable_status());
     AERROR << "Planning failed:" << status.ToString();
@@ -300,6 +335,7 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
     }
   }
 
+  // 添加重新路径规划原因
   trajectory_pb->set_is_replan(stitching_trajectory.size() == 1);
   // TODO(all): integrate reverse gear
   trajectory_pb->set_gear(canbus::Chassis::GEAR_DRIVE);
@@ -309,8 +345,8 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
   auto seq_num = frame_->SequenceNum();
   injector_->frame_history()->Add(seq_num, std::move(frame_));
 }
-
-void NaviPlanning::ProcessPadMsg(PadMessage::DrivingAction drvie_action) {
+ProcessPadMsg
+void NaviPlanning::(PadMessage::DrivingAction drvie_action) {
   if (FLAGS_use_navigation_mode) {
     std::map<std::string, uint32_t> lane_id_to_priority;
     auto& ref_line_info_group = *frame_->mutable_reference_line_info();
@@ -450,38 +486,42 @@ void NaviPlanning::GetRightNeighborLanesInfo(
             });
 }
 
-void NaviPlanning::ExportReferenceLineDebug(planning_internal::Debug* debug) {
-  if (!FLAGS_enable_record_debug) {
-    return;
-  }
-  for (auto& reference_line_info : *frame_->mutable_reference_line_info()) {
-    auto rl_debug = debug->mutable_planning_data()->add_reference_line();
-    rl_debug->set_id(reference_line_info.Lanes().Id());
-    rl_debug->set_length(reference_line_info.reference_line().Length());
-    rl_debug->set_cost(reference_line_info.Cost());
-    rl_debug->set_is_change_lane_path(reference_line_info.IsChangeLanePath());
-    rl_debug->set_is_drivable(reference_line_info.IsDrivable());
-    rl_debug->set_is_protected(reference_line_info.GetRightOfWayStatus() ==
-                               ADCTrajectory::PROTECTED);
-  }
-}
+// void NaviPlanning::ExportReferenceLineDebug(planning_internal::Debug* debug) {
+//   if (!FLAGS_enable_record_debug) {
+//     return;
+//   }
+//   for (auto& reference_line_info : *frame_->mutable_reference_line_info()) {
+//     auto rl_debug = debug->mutable_planning_data()->add_reference_line();
+//     rl_debug->set_id(reference_line_info.Lanes().Id());
+//     rl_debug->set_length(reference_line_info.reference_line().Length());
+//     rl_debug->set_cost(reference_line_info.Cost());
+//     rl_debug->set_is_change_lane_path(reference_line_info.IsChangeLanePath());
+//     rl_debug->set_is_drivable(reference_line_info.IsDrivable());
+//     rl_debug->set_is_protected(reference_line_info.GetRightOfWayStatus() ==
+//                                ADCTrajectory::PROTECTED);
+//   }
+// }
 
 Status NaviPlanning::Plan(
     const double current_time_stamp,
     const std::vector<TrajectoryPoint>& stitching_trajectory,
     ADCTrajectory* const trajectory_pb) {
-  auto* ptr_debug = trajectory_pb->mutable_debug();
-  if (FLAGS_enable_record_debug) {
-    ptr_debug->mutable_planning_data()->mutable_init_point()->CopyFrom(
-        stitching_trajectory.back());
-  }
+  // auto* ptr_debug = trajectory_pb->mutable_debug();
+  // if (FLAGS_enable_record_debug) {
+  //   ptr_debug->mutable_planning_data()->mutable_init_point()->CopyFrom(
+  //       stitching_trajectory.back());
+  // }
 
+  // 调用规划器plan
   auto status =
       planner_->Plan(stitching_trajectory.back(), frame_.get(), trajectory_pb);
 
-  ExportReferenceLineDebug(ptr_debug);
+  // ExportReferenceLineDebug(ptr_debug);
 
+  // 遍历所有参考线，找出代价最小的轨迹
   const auto* best_ref_info = frame_->FindDriveReferenceLineInfo();
+
+  // 如果找不到轨迹，说明规划失败
   if (!best_ref_info) {
     const std::string msg = "planner failed to make a driving plan";
     AERROR << msg;
@@ -490,9 +530,13 @@ Status NaviPlanning::Plan(
     }
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
-  ptr_debug->MergeFrom(best_ref_info->debug());
+
+
+
+  // ptr_debug->MergeFrom(best_ref_info->debug());
   trajectory_pb->mutable_latency_stats()->MergeFrom(
       best_ref_info->latency_stats());
+
   // set right of way status
   trajectory_pb->set_right_of_way_status(best_ref_info->GetRightOfWayStatus());
   for (const auto& id : best_ref_info->TargetLaneId()) {
@@ -502,36 +546,36 @@ Status NaviPlanning::Plan(
   best_ref_info->ExportDecision(trajectory_pb->mutable_decision(),
                                 injector_->planning_context());
 
-  // Add debug information.
-  if (FLAGS_enable_record_debug) {
-    auto* reference_line = ptr_debug->mutable_planning_data()->add_path();
-    reference_line->set_name("planning_reference_line");
-    const auto& reference_points =
-        best_ref_info->reference_line().reference_points();
-    double s = 0.0;
-    double prev_x = 0.0;
-    double prev_y = 0.0;
-    bool empty_path = true;
-    for (const auto& reference_point : reference_points) {
-      auto* path_point = reference_line->add_path_point();
-      path_point->set_x(reference_point.x());
-      path_point->set_y(reference_point.y());
-      path_point->set_theta(reference_point.heading());
-      path_point->set_kappa(reference_point.kappa());
-      path_point->set_dkappa(reference_point.dkappa());
-      if (empty_path) {
-        path_point->set_s(0.0);
-        empty_path = false;
-      } else {
-        double dx = reference_point.x() - prev_x;
-        double dy = reference_point.y() - prev_y;
-        s += std::hypot(dx, dy);
-        path_point->set_s(s);
-      }
-      prev_x = reference_point.x();
-      prev_y = reference_point.y();
-    }
-  }
+  // // Add debug information.
+  // if (FLAGS_enable_record_debug) {
+  //   auto* reference_line = ptr_debug->mutable_planning_data()->add_path();
+  //   reference_line->set_name("planning_reference_line");
+  //   const auto& reference_points =
+  //       best_ref_info->reference_line().reference_points();
+  //   double s = 0.0;
+  //   double prev_x = 0.0;
+  //   double prev_y = 0.0;
+  //   bool empty_path = true;
+  //   for (const auto& reference_point : reference_points) {
+  //     auto* path_point = reference_line->add_path_point();
+  //     path_point->set_x(reference_point.x());
+  //     path_point->set_y(reference_point.y());
+  //     path_point->set_theta(reference_point.heading());
+  //     path_point->set_kappa(reference_point.kappa());
+  //     path_point->set_dkappa(reference_point.dkappa());
+  //     if (empty_path) {
+  //       path_point->set_s(0.0);
+  //       empty_path = false;
+  //     } else {
+  //       double dx = reference_point.x() - prev_x;
+  //       double dy = reference_point.y() - prev_y;
+  //       s += std::hypot(dx, dy);
+  //       path_point->set_s(s);
+  //     }
+  //     prev_x = reference_point.x();
+  //     prev_y = reference_point.y();
+  //   }
+  // }
 
   last_publishable_trajectory_.reset(new PublishableTrajectory(
       current_time_stamp, best_ref_info->trajectory()));
@@ -550,15 +594,16 @@ Status NaviPlanning::Plan(
   }
   **/
 
-  for (size_t i = 0; i < last_publishable_trajectory_->NumOfPoints(); ++i) {
-    if (last_publishable_trajectory_->TrajectoryPointAt(i).relative_time() >
-        FLAGS_trajectory_time_high_density_period) {
-      break;
-    }
-    ADEBUG << last_publishable_trajectory_->TrajectoryPointAt(i)
-                  .ShortDebugString();
-  }
+  // for (size_t i = 0; i < last_publishable_trajectory_->NumOfPoints(); ++i) {
+  //   if (last_publishable_trajectory_->TrajectoryPointAt(i).relative_time() >
+  //       FLAGS_trajectory_time_high_density_period) {
+  //     break;
+  //   }
+  //   ADEBUG << last_publishable_trajectory_->TrajectoryPointAt(i)
+  //                 .ShortDebugString();
+  // }
 
+  // 发布轨迹
   last_publishable_trajectory_->PopulateTrajectoryProtobuf(trajectory_pb);
 
   best_ref_info->ExportEngageAdvice(trajectory_pb->mutable_engage_advice(),
@@ -576,22 +621,28 @@ Status NaviPlanning::Plan(
   injector_->planning()->mutable_planning_status()->Clear();
 }*/
 
+// 对原始定位数据进行简单的过滤
 NaviPlanning::VehicleConfig NaviPlanning::ComputeVehicleConfigFromLocalization(
     const localization::LocalizationEstimate& localization) const {
   NaviPlanning::VehicleConfig vehicle_config;
 
+  // 如果原始数据没有位姿，直接返回
   if (!localization.pose().has_position()) {
     return vehicle_config;
   }
 
+  // 提取x,y和四元数
   vehicle_config.x_ = localization.pose().position().x();
   vehicle_config.y_ = localization.pose().position().y();
 
   const auto& orientation = localization.pose().orientation();
 
+  // 如果有Heading直接使用
   if (localization.pose().has_heading()) {
     vehicle_config.theta_ = localization.pose().heading();
-  } else {
+  } 
+  // 否则，从四元数中提取
+  else {
     vehicle_config.theta_ = common::math::QuaternionToHeading(
         orientation.qw(), orientation.qx(), orientation.qy(), orientation.qz());
   }
