@@ -38,6 +38,8 @@ Status ControlTaskAgent::Init(std::shared_ptr<DependencyInjector> injector,
   }
 
   injector_ = injector;
+
+  // 初始化所有controller
   for (int i = 0; i < control_pipeline.controller_size(); i++) {
     auto controller = PluginManager::Instance()->CreateInstance<ControlTask>(
         "apollo::control::" + control_pipeline.controller(i).type());
@@ -57,6 +59,8 @@ Status ControlTaskAgent::ComputeControlCommand(
     const localization::LocalizationEstimate *localization,
     const canbus::Chassis *chassis, const planning::ADCTrajectory *trajectory,
     control::ControlCommand *cmd) {
+
+  // 逐个调用控制器
   for (auto &controller : controller_list_) {
     ADEBUG << "controller:" << controller->Name() << " processing ...";
     double start_timestamp = Clock::NowInSeconds();

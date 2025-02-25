@@ -59,6 +59,7 @@ Status DemoControlTask::ComputeControlCommand(
     ControlCommand *cmd) {
   auto debug = cmd->mutable_debug()->mutable_simple_lon_debug();
 
+  // 如果加速度小于最低边界，则修正加速度
   double controller_calculate_acceleration = cmd->acceleration();
   double command_acceleration =
       abs(controller_calculate_acceleration) < low_bound_acceleration_

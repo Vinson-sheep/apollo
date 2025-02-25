@@ -78,6 +78,8 @@ bool ReedShepp::ShortestRSP(
         const std::shared_ptr<Node3d> start_node,
         const std::shared_ptr<Node3d> end_node,
         std::shared_ptr<ReedSheppPath> optimal_path) {
+
+  // 
   std::vector<ReedSheppPath> all_possible_paths;
   if (!GenerateRSPs(start_node, end_node, &all_possible_paths)) {
       ADEBUG << "Fail to generate different combination of Reed Shepp "
@@ -185,12 +187,14 @@ bool ReedShepp::ShortestRSP(
   return true;
 }
 
+// 寻找所有可能的RS路径
 bool ReedShepp::GenerateRSPs(
         const std::shared_ptr<Node3d> start_node,
         const std::shared_ptr<Node3d> end_node,
         std::vector<ReedSheppPath>* all_possible_paths) {
   if (FLAGS_enable_parallel_hybrid_a) {
       // AINFO << "parallel hybrid a*";
+      // 并行版本
     if (!GenerateRSPPar(start_node, end_node, all_possible_paths)) {
       ADEBUG << "Fail to generate general profile of different RSPs";
       return false;

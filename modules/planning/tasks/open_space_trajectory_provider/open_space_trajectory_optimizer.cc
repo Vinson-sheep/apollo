@@ -134,11 +134,16 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
   Eigen::MatrixXd dual_l_result_ds;
   Eigen::MatrixXd dual_n_result_ds;
 
+  // 对粗解进行平滑
   if (FLAGS_enable_parallel_trajectory_smoothing) {
+
+    // 对hybrid A*粗解进行分段处理
     std::vector<HybridAStartResult> partition_trajectories;
     if (!warm_start_->TrajectoryPartition(result, &partition_trajectories)) {
       return Status(ErrorCode::PLANNING_ERROR, "Hybrid Astar partition failed");
     }
+
+
     size_t size = partition_trajectories.size();
     std::vector<Eigen::MatrixXd> xWS_vec;
     std::vector<Eigen::MatrixXd> uWS_vec;
@@ -160,8 +165,12 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
     dual_n_result_ds_vec.resize(size);
 
     // In for loop
-    ADEBUG << "Trajectories size in smoother is " << size;
+    // ADEBUG << "Trajectories size in smoother is " << size;
+
+    // 遍历所有
     for (size_t i = 0; i < size; ++i) {
+
+      // 将轨迹段加载到xWS_vec和uWS_vec
       LoadHybridAstarResultInEigen(&partition_trajectories[i], &xWS_vec[i],
                                    &uWS_vec[i]);
       Eigen::MatrixXd last_time_u(2, 1);
@@ -193,50 +202,50 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
               "iterative anchoring smoothing problem failed to solve");
         }
       } else {
-        const double start_system_timestamp =
-            std::chrono::duration<double>(
-                std::chrono::system_clock::now().time_since_epoch())
-                .count();
-        AINFO << "use distance approach parallel smoother";
+        // const double start_system_timestamp =
+        //     std::chrono::duration<double>(
+        //         std::chrono::system_clock::now().time_since_epoch())
+        //         .count();
+        // AINFO << "use distance approach parallel smoother";
         if (!GenerateDistanceApproachTraj(
                 xWS_vec[i], uWS_vec[i], XYbounds, obstacles_edges_num,
                 obstacles_A, obstacles_b, obstacles_vertices_vec, last_time_u,
                 init_v, &state_result_ds_vec[i], &control_result_ds_vec[i],
                 &time_result_ds_vec[i], &l_warm_up_vec[i], &n_warm_up_vec[i],
                 &dual_l_result_ds_vec[i], &dual_n_result_ds_vec[i])) {
-          AERROR << "Smoother fail at " << i
-                 << "th trajectory with index starts from 0";
-          AERROR << i << "th trajectory size is " << xWS_vec[i].cols();
-          AERROR << "State matrix: " << xWS_vec[i];
-          AERROR << "Control matrix: " << uWS_vec[i];
+          // AERROR << "Smoother fail at " << i
+          //        << "th trajectory with index starts from 0";
+          // AERROR << i << "th trajectory size is " << xWS_vec[i].cols();
+          // AERROR << "State matrix: " << xWS_vec[i];
+          // AERROR << "Control matrix: " << uWS_vec[i];
           return Status(ErrorCode::PLANNING_ERROR,
                         "distance approach smoothing problem failed to solve");
         }
-        const auto end_system_timestamp =
-            std::chrono::duration<double>(
-                std::chrono::system_clock::now().time_since_epoch())
-                .count();
-        const auto time_diff_ms =
-            (end_system_timestamp - start_system_timestamp) * 1000;
-        ADEBUG << "total planning time spend: " << time_diff_ms << " ms.";
-        ADEBUG << i << "th trajectory size is " << xWS_vec[i].cols();
-        ADEBUG << "average time spend: " << time_diff_ms / xWS_vec[i].cols()
-               << " ms per point.";
-        ADEBUG << "average time spend after smooth: "
-               << time_diff_ms / state_result_ds_vec[i].cols()
-               << " ms per point.";
-        ADEBUG << i << "th smoothed trajectory size is "
-               << state_result_ds_vec[i].cols();
+        // const auto end_system_timestamp =
+        //     std::chrono::duration<double>(
+        //         std::chrono::system_clock::now().time_since_epoch())
+        //         .count();
+        // const auto time_diff_ms =
+        //     (end_system_timestamp - start_system_timestamp) * 1000;
+        // ADEBUG << "total planning time spend: " << time_diff_ms << " ms.";
+        // ADEBUG << i << "th trajectory size is " << xWS_vec[i].cols();
+        // ADEBUG << "average time spend: " << time_diff_ms / xWS_vec[i].cols()
+        //        << " ms per point.";
+        // ADEBUG << "average time spend after smooth: "
+        //        << time_diff_ms / state_result_ds_vec[i].cols()
+        //        << " ms per point.";
+        // ADEBUG << i << "th smoothed trajectory size is "
+        //        << state_result_ds_vec[i].cols();
       }
-      const auto smoother_end_timestamp = std::chrono::system_clock::now();
-      std::chrono::duration<double> smoother_diff =
-          smoother_end_timestamp - smoother_start_timestamp;
-      AINFO << "Open space trajectory smoothing total time: "
-            << smoother_diff.count() * 1000.0 << " ms at the " << i
-            << "th trajectory.";
-      AINFO << "The " << i << "th trajectory pre-smoothing size is "
-            << xWS_vec[i].cols() << "; post-smoothing size is "
-            << state_result_ds_vec[i].cols();
+      // const auto smoother_end_timestamp = std::chrono::system_clock::now();
+      // std::chrono::duration<double> smoother_diff =
+      //     smoother_end_timestamp - smoother_start_timestamp;
+      // AINFO << "Open space trajectory smoothing total time: "
+      //       << smoother_diff.count() * 1000.0 << " ms at the " << i
+      //       << "th trajectory.";
+      // AINFO << "The " << i << "th trajectory pre-smoothing size is "
+      //       << xWS_vec[i].cols() << "; post-smoothing size is "
+      //       << state_result_ds_vec[i].cols();
     }
 
     // Retrive the trajectory in one piece
@@ -618,6 +627,9 @@ bool OpenSpaceTrajectoryOptimizer::GenerateDistanceApproachTraj(
   return true;
 }
 
+// 加载Hybrid A*数据到xWS和uWS
+// xWS为状态空间，包括x,y,phi,v
+// uWS为控制空间，包括steer,a
 // TODO(Jinyun): deprecate the use of Eigen in trajectory smoothing
 void OpenSpaceTrajectoryOptimizer::LoadHybridAstarResultInEigen(
     HybridAStartResult* result, Eigen::MatrixXd* xWS, Eigen::MatrixXd* uWS) {

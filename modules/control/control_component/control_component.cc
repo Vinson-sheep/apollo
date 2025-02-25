@@ -40,6 +40,7 @@ const double kDoubleEpsilon = 1e-6;
 ControlComponent::ControlComponent()
     : monitor_logger_buffer_(common::monitor::MonitorMessageItem::CONTROL) {}
 
+// 初始化reader
 bool ControlComponent::Init() {
   injector_ = std::make_shared<DependencyInjector>();
   init_time_ = Clock::Now();
@@ -188,6 +189,7 @@ Status ControlComponent::ProduceControlCommand(
     ControlCommand *control_command) {
   Status status = CheckInput(&local_view_);
   // check data
+  // 如果状态不Ok，进入停止状态
   if (!status.ok()) {
     AERROR_EVERY(100) << "Control input data failed: "
                       << status.error_message();
@@ -197,9 +199,12 @@ Status ControlComponent::ProduceControlCommand(
         status.error_message());
     estop_ = true;
     estop_reason_ = status.error_message();
-  } else {
+  } 
+  // 否则
+  else {
     estop_ = false;
     Status status_ts = CheckTimestamp(local_view_);
+    // 如果另一个状态不Ok，进入停止状态
     if (!status_ts.ok()) {
       AERROR << "Input messages timeout";
       // Clear trajectory data to make control stop if no data received again
@@ -215,24 +220,29 @@ Status ControlComponent::ProduceControlCommand(
         control_command->mutable_engage_advice()->set_reason(
             status.error_message());
       }
-    } else {
+    } 
+    // 如果一切正常，准备进行控制
+    else {
       control_command->mutable_engage_advice()->set_advice(
           apollo::common::EngageAdvice::READY_TO_ENGAGE);
       estop_ = false;
     }
   }
 
+  // 更新停止状态
   // check estop
   estop_ = FLAGS_enable_persistent_estop
                ? estop_ || local_view_.trajectory().estop().is_estop()
                : local_view_.trajectory().estop().is_estop();
 
+  // 如果轨迹是刹车轨迹，进入刹车状态
   if (local_view_.trajectory().estop().is_estop()) {
     estop_ = true;
     estop_reason_ = "estop from planning : ";
     estop_reason_ += local_view_.trajectory().estop().reason();
   }
 
+  // 如果轨迹为空，进入estop
   if (local_view_.trajectory().trajectory_point().empty()) {
     AWARN_EVERY(100) << "planning has no trajectory point. ";
     estop_ = true;
@@ -240,6 +250,7 @@ Status ControlComponent::ProduceControlCommand(
                     local_view_.trajectory().header().ShortDebugString();
   }
 
+  // 如果是前进档，但轨迹速度是负向的，进入estop
   if (FLAGS_enable_gear_drive_negative_speed_protection) {
     const double kEpsilon = 0.001;
     auto first_trajectory_point = local_view_.trajectory().trajectory_point(0);
@@ -250,12 +261,16 @@ Status ControlComponent::ProduceControlCommand(
     }
   }
 
+  // 如果没有进入estop
   if (!estop_) {
+
+    // 如果进入了手动控制模式，重置控制器
     if (local_view_.chassis().driving_mode() == Chassis::COMPLETE_MANUAL) {
       control_task_agent_.Reset();
       AINFO_EVERY(100) << "Reset Controllers in Manual Mode";
     }
 
+    // 更新debug信息
     auto debug = control_command->mutable_debug()->mutable_input_debug();
     debug->mutable_localization_header()->CopyFrom(
         local_view_.localization().header());
@@ -263,17 +278,22 @@ Status ControlComponent::ProduceControlCommand(
     debug->mutable_trajectory_header()->CopyFrom(
         local_view_.trajectory().header());
 
+    // 更新信息1
     if (local_view_.trajectory().is_replan()) {
       latest_replan_trajectory_header_ = local_view_.trajectory().header();
     }
 
+    // 更新信息2
     if (latest_replan_trajectory_header_.has_sequence_num()) {
       debug->mutable_latest_replan_trajectory_header()->CopyFrom(
           latest_replan_trajectory_header_);
     }
   }
 
+  // 如果local_view_的轨迹为非空，根据轨迹生成控制信号
   if (!local_view_.trajectory().trajectory_point().empty()) {
+    
+    // 调用各种controller
     // controller agent
     Status status_compute = control_task_agent_.ComputeControlCommand(
         &local_view_.localization(), &local_view_.chassis(),
@@ -294,6 +314,7 @@ Status ControlComponent::ProduceControlCommand(
     }
   }
 
+  // 如果是estop，直接生成刹车轨迹
   // if planning set estop, then no control process triggered
   if (estop_) {
     AWARN_EVERY(100) << "Estop triggered! No control core method executed!";
@@ -306,6 +327,8 @@ Status ControlComponent::ProduceControlCommand(
         injector_->previous_control_command_mutable()->steering_target();
     control_command->set_steering_target(previous_steering_command_);
   }
+
+  // 
   // check signal
   if (local_view_.trajectory().decision().has_vehicle_signal()) {
     control_command->mutable_signal()->CopyFrom(
@@ -319,6 +342,7 @@ bool ControlComponent::Proc() {
 
   injector_->control_debug_info_clear();
 
+  // 加载地盘信息
   chassis_reader_->Observe();
   const auto &chassis_msg = chassis_reader_->GetLatestObserved();
   if (chassis_msg == nullptr) {
@@ -328,18 +352,21 @@ bool ControlComponent::Proc() {
   }
   OnChassis(chassis_msg);
 
+  // 加载轨迹信息
   trajectory_reader_->Observe();
   const auto &trajectory_msg = trajectory_reader_->GetLatestObserved();
   if (trajectory_msg == nullptr) {
     AERROR << "planning msg is not ready!";
   } else {
     // Check if new planning data received.
+    // 如果前后轨迹不一样，需要重新加载轨迹
     if (latest_trajectory_.header().sequence_num() !=
         trajectory_msg->header().sequence_num()) {
       OnPlanning(trajectory_msg);
     }
   }
 
+  // 读取规划命令状态
   planning_command_status_reader_->Observe();
   const auto &planning_status_msg =
       planning_command_status_reader_->GetLatestObserved();
@@ -350,6 +377,7 @@ bool ControlComponent::Proc() {
   }
   injector_->set_planning_command_status(planning_command_status_);
 
+  // 读取定位信息
   localization_reader_->Observe();
   const auto &localization_msg = localization_reader_->GetLatestObserved();
   if (localization_msg == nullptr) {
@@ -359,12 +387,14 @@ bool ControlComponent::Proc() {
   }
   OnLocalization(localization_msg);
 
+  // 读取平板指令
   pad_msg_reader_->Observe();
   const auto &pad_msg = pad_msg_reader_->GetLatestObserved();
   if (pad_msg != nullptr) {
     OnPad(pad_msg);
   }
 
+  // 复制之前的信息到local_view
   {
     // TODO(SHU): to avoid redundent copy
     std::lock_guard<std::mutex> lock(mutex_);
@@ -376,6 +406,7 @@ bool ControlComponent::Proc() {
     }
   }
 
+  // 控制子模块？
   // use control submodules
   if (FLAGS_use_control_submodules) {
     local_view_.mutable_header()->set_lidar_timestamp(
@@ -399,6 +430,7 @@ bool ControlComponent::Proc() {
     return true;
   }
 
+  // 如果收到平板的reset指令，终止停车状态
   if (pad_msg != nullptr) {
     ADEBUG << "pad_msg: " << pad_msg_.ShortDebugString();
     ADEBUG << "pad_msg is not nullptr";
@@ -410,6 +442,7 @@ bool ControlComponent::Proc() {
     pad_received_ = true;
   }
 
+  //测试：如果模块时间校验异常，返回异常
   if (FLAGS_is_control_test_mode && FLAGS_control_test_duration > 0 &&
       (start_time - init_time_).ToSecond() > FLAGS_control_test_duration) {
     AERROR << "Control finished testing. exit";
@@ -417,24 +450,33 @@ bool ControlComponent::Proc() {
     return false;
   }
 
+  // 控制前正在运作
   injector_->set_control_process(true);
 
+  // 清除debug信息
   injector_->mutable_control_debug_info()
       ->mutable_control_component_debug()
       ->Clear();
+
+  // 更新自动驾驶状态
   CheckAutoMode(&local_view_.chassis());
 
   ControlCommand control_command;
 
+  // 如果处于自动驾驶状态，计算控制命令
   Status status;
   if (local_view_.chassis().driving_mode() ==
       apollo::canbus::Chassis::COMPLETE_AUTO_DRIVE) {
     status = ProduceControlCommand(&control_command);
     ADEBUG << "Produce control command normal.";
-  } else {
+  } 
+  // 否则，全部清空
+  else {
     ADEBUG << "Into reset control command.";
     ResetAndProduceZeroControlCommand(&control_command);
   }
+
+  // 后续主要是对control_command做校验
 
   AERROR_IF(!status.ok()) << "Failed to produce control command:"
                           << status.error_message();
@@ -601,6 +643,7 @@ void ControlComponent::GetVehiclePitchAngle(ControlCommand *control_command) {
 }
 
 void ControlComponent::CheckAutoMode(const canbus::Chassis *chassis) {
+  // 判断是否刚进入自动驾驶模式
   if (!injector_->previous_control_debug_mutable()
            ->mutable_control_component_debug()
            ->is_auto() &&
@@ -615,6 +658,7 @@ void ControlComponent::CheckAutoMode(const canbus::Chassis *chassis) {
       ->mutable_control_component_debug()
       ->set_from_else_to_auto(from_else_to_auto_);
 
+  // 判断是否已经自驾任务是否结束
   if (chassis->driving_mode() == apollo::canbus::Chassis::COMPLETE_AUTO_DRIVE) {
     is_auto_ = true;
   } else {

@@ -84,6 +84,7 @@ LatController::LatController() : name_("LQR-based Lateral Controller") {
 
 LatController::~LatController() { CloseLogFile(); }
 
+// 加载控制参数
 bool LatController::LoadControlConf() {
   vehicle_param_ =
       common::VehicleConfigHelper::Instance()->GetConfig().vehicle_param();
@@ -93,8 +94,8 @@ bool LatController::LoadControlConf() {
     AERROR << "[LatController] Invalid control update interval.";
     return false;
   }
-  cf_ = lat_based_lqr_controller_conf_.cf();
-  cr_ = lat_based_lqr_controller_conf_.cr();
+  cf_ = lat_based_lqr_controller_conf_.cf();  // 前轮侧偏刚度
+  cr_ = lat_based_lqr_controller_conf_.cr();  // 后轮侧偏刚度
   preview_window_ = lat_based_lqr_controller_conf_.preview_window();
   lookahead_station_low_speed_ =
       lat_based_lqr_controller_conf_.lookahead_station();
@@ -120,8 +121,8 @@ bool LatController::LoadControlConf() {
   const double mass_rear = mass_rl + mass_rr;
   mass_ = mass_front + mass_rear;
 
-  lf_ = wheelbase_ * (1.0 - mass_front / mass_);
-  lr_ = wheelbase_ * (1.0 - mass_rear / mass_);
+  lf_ = wheelbase_ * (1.0 - mass_front / mass_);  // 从质心到前轴的长度
+  lr_ = wheelbase_ * (1.0 - mass_rear / mass_);   // 从质心到后轴的长度
 
   // moment of inertia
   iz_ = lf_ * lf_ * mass_front + lr_ * lr_ * mass_rear;
@@ -136,24 +137,24 @@ bool LatController::LoadControlConf() {
   return true;
 }
 
-void LatController::ProcessLogs(const SimpleLateralDebug *debug,
-                                const canbus::Chassis *chassis) {
-  const std::string log_str = absl::StrCat(
-      debug->lateral_error(), ",", debug->ref_heading(), ",", debug->heading(),
-      ",", debug->heading_error(), ",", debug->heading_error_rate(), ",",
-      debug->lateral_error_rate(), ",", debug->curvature(), ",",
-      debug->steer_angle(), ",", debug->steer_angle_feedforward(), ",",
-      debug->steer_angle_lateral_contribution(), ",",
-      debug->steer_angle_lateral_rate_contribution(), ",",
-      debug->steer_angle_heading_contribution(), ",",
-      debug->steer_angle_heading_rate_contribution(), ",",
-      debug->steer_angle_feedback(), ",", chassis->steering_percentage(), ",",
-      injector_->vehicle_state()->linear_velocity());
-  if (FLAGS_enable_csv_debug) {
-    steer_log_file_ << log_str << std::endl;
-  }
-  ADEBUG << "Steer_Control_Detail: " << log_str;
-}
+// void LatController::ProcessLogs(const SimpleLateralDebug *debug,
+//                                 const canbus::Chassis *chassis) {
+//   const std::string log_str = absl::StrCat(
+//       debug->lateral_error(), ",", debug->ref_heading(), ",", debug->heading(),
+//       ",", debug->heading_error(), ",", debug->heading_error_rate(), ",",
+//       debug->lateral_error_rate(), ",", debug->curvature(), ",",
+//       debug->steer_angle(), ",", debug->steer_angle_feedforward(), ",",
+//       debug->steer_angle_lateral_contribution(), ",",
+//       debug->steer_angle_lateral_rate_contribution(), ",",
+//       debug->steer_angle_heading_contribution(), ",",
+//       debug->steer_angle_heading_rate_contribution(), ",",
+//       debug->steer_angle_feedback(), ",", chassis->steering_percentage(), ",",
+//       injector_->vehicle_state()->linear_velocity());
+//   if (FLAGS_enable_csv_debug) {
+//     steer_log_file_ << log_str << std::endl;
+//   }
+//   ADEBUG << "Steer_Control_Detail: " << log_str;
+// }
 
 void LatController::LogInitParameters() {
   AINFO << name_ << " begin.";
@@ -175,6 +176,7 @@ void LatController::InitializeFilters() {
 }
 
 Status LatController::Init(std::shared_ptr<DependencyInjector> injector) {
+  // 加载配置文件
   if (!ControlTask::LoadConfig<LatBaseLqrControllerConf>(
           &lat_based_lqr_controller_conf_)) {
     AERROR << "failed to load control conf";
@@ -182,11 +184,15 @@ Status LatController::Init(std::shared_ptr<DependencyInjector> injector) {
                   "failed to load lat control_conf");
   }
   injector_ = injector;
+
+  // 加载控制相关配置
   if (!LoadControlConf()) {
     AERROR << "failed to load control conf";
     return Status(ErrorCode::CONTROL_COMPUTE_ERROR,
                   "failed to load control_conf");
   }
+
+  // 
   // Matrix init operations.
   const int matrix_size = basic_state_size_ + preview_window_;
   matrix_a_ = Matrix::Zero(basic_state_size_, basic_state_size_);
@@ -306,16 +312,22 @@ Status LatController::ComputeControlCommand(
     const canbus::Chassis *chassis,
     const planning::ADCTrajectory *planning_published_trajectory,
     ControlCommand *cmd) {
+
+  // 加载状态 && 上一帧 && 目标轨迹
   auto vehicle_state = injector_->vehicle_state();
   auto previous_lon_debug = injector_->Get_previous_lon_debug_info();
   auto target_tracking_trajectory = *planning_published_trajectory;
 
+  // 如果允许在自动驾驶模式下对位置和航向进行融合更新, 并对规划轨迹进行修正
   if (FLAGS_use_navigation_mode &&
       lat_based_lqr_controller_conf_.enable_navigation_mode_position_update()) {
+    
+    // 计算当前规划轨迹的时间戳与上一次记录的时间戳之间的差异
     auto time_stamp_diff =
         planning_published_trajectory->header().timestamp_sec() -
         current_trajectory_timestamp_;
 
+    // 从定位信息中获取车辆的当前位置和航向
     auto curr_vehicle_x = localization->pose().position().x();
     auto curr_vehicle_y = localization->pose().position().y();
 
@@ -323,21 +335,27 @@ Status LatController::ComputeControlCommand(
     const auto &orientation = localization->pose().orientation();
     if (localization->pose().has_heading()) {
       curr_vehicle_heading = localization->pose().heading();
-    } else {
+    } 
+    // 如果定位信息中没有直接提供航向角，则通过四元数计算航向角
+    else {
       curr_vehicle_heading =
           common::math::QuaternionToHeading(orientation.qw(), orientation.qx(),
                                             orientation.qy(), orientation.qz());
     }
 
     // new planning trajectory
+    // 如果时间戳差异大于一个很小的阈值（1.0e-6），则认为这是一个新的规划轨迹
     if (time_stamp_diff > 1.0e-6) {
+      // 记录车辆的初始位置和初始航向。同时更新当前轨迹的时间戳
       init_vehicle_x_ = curr_vehicle_x;
       init_vehicle_y_ = curr_vehicle_y;
       init_vehicle_heading_ = curr_vehicle_heading;
 
       current_trajectory_timestamp_ =
           planning_published_trajectory->header().timestamp_sec();
-    } else {
+    } 
+    // 如果没有检测到新的规划轨迹（即时间戳差异很小），则对规划轨迹进行修正
+    else {
       auto x_diff_map = curr_vehicle_x - init_vehicle_x_;
       auto y_diff_map = curr_vehicle_y - init_vehicle_y_;
       auto theta_diff = curr_vehicle_heading - init_vehicle_heading_;
@@ -356,6 +374,8 @@ Status LatController::ComputeControlCommand(
 
       auto ptr_trajectory_points =
           target_tracking_trajectory.mutable_trajectory_point();
+
+      // 通过旋转和平移变换，将规划轨迹从地图坐标系转换到车辆坐标系。
       std::for_each(
           ptr_trajectory_points->begin(), ptr_trajectory_points->end(),
           [&cos_theta_diff, &sin_theta_diff, &tx, &ty,
@@ -375,9 +395,11 @@ Status LatController::ComputeControlCommand(
     }
   }
 
+  // 将转换后的轨迹赋值给trajectory_analyzer_
   trajectory_analyzer_ =
       std::move(TrajectoryAnalyzer(&target_tracking_trajectory));
 
+  // 将规划轨迹的坐标系从后轴中心转换到车辆质心
   // Transform the coordinate of the planning trajectory from the center of the
   // rear-axis to the center of mass, if conditions matched
   if (((lat_based_lqr_controller_conf_.trajectory_transform_to_com_reverse() &&
@@ -388,6 +410,7 @@ Status LatController::ComputeControlCommand(
     trajectory_analyzer_.TrajectoryTransformToCOM(lr_);
   }
 
+  // 重建动力学模型
   // Re-build the vehicle dynamic models at reverse driving (in particular,
   // replace the lateral translational motion dynamics with the corresponding
   // kinematic models)
@@ -401,11 +424,13 @@ Status LatController::ComputeControlCommand(
      0.0, ((lr * cr - lf * cf) / i_z) / v, (l_f * c_f - l_r * c_r) / i_z,
      (-1.0 * (l_f^2 * c_f + l_r^2 * c_r) / i_z) / v;]
     */
+    // 此处从配置中读取，实际应用需要实时标定
     cf_ = -lat_based_lqr_controller_conf_.cf();
     cr_ = -lat_based_lqr_controller_conf_.cr();
     matrix_a_(0, 1) = 0.0;
     matrix_a_coeff_(0, 2) = 1.0;
-  } else {
+  } 
+  else {
     /*
     A matrix (Gear Drive)
     [0.0, 1.0, 0.0, 0.0;
@@ -434,17 +459,22 @@ Status LatController::ComputeControlCommand(
   matrix_b_(3, 0) = lf_ * cf_ / iz_;
   matrix_bd_ = matrix_b_ * ts_;
 
+  // 如果是后退档，逆向车辆航向
   UpdateDrivingOrientation();
 
+  // 清除debug
   SimpleLateralDebug *debug = cmd->mutable_debug()->mutable_simple_lat_debug();
   debug->Clear();
 
+  // 更新状态矩阵
   // Update state = [Lateral Error, Lateral Error Rate, Heading Error, Heading
   // Error Rate, preview lateral error1 , preview lateral error2, ...]
   UpdateState(debug, chassis);
 
+  // 更新状态转移矩阵
   UpdateMatrix();
 
+  // 
   // Compound discrete matrix with road preview model
   UpdateMatrixCompound();
 
@@ -640,7 +670,7 @@ Status LatController::ComputeControlCommand(
   debug->set_steering_position(steering_position);
   debug->set_ref_speed(vehicle_state->linear_velocity());
 
-  ProcessLogs(debug, chassis);
+  // ProcessLogs(debug, chassis);
   return Status::OK();
 }
 
@@ -655,12 +685,18 @@ Status LatController::Reset() {
 void LatController::UpdateState(SimpleLateralDebug *debug,
                                 const canbus::Chassis *chassis) {
   auto vehicle_state = injector_->vehicle_state();
+
+  // 如果启用导航模式
   if (FLAGS_use_navigation_mode) {
+    // 直接调用 ComputeLateralErrors 计算横向误差
     ComputeLateralErrors(
         0.0, 0.0, driving_orientation_, vehicle_state->linear_velocity(),
         vehicle_state->angular_velocity(), vehicle_state->linear_acceleration(),
         trajectory_analyzer_, debug, chassis);
-  } else {
+  } 
+  // 否则
+  else {
+    // 先将车辆状态从后轴中心坐标系转换到质心坐标系，再调用 ComputeLateralErrors 计算横向误差
     // Transform the coordinate of the vehicle states from the center of the
     // rear-axis to the center of mass, if conditions matched
     const auto &com = vehicle_state->ComputeCOMPosition(lr_);
@@ -671,6 +707,7 @@ void LatController::UpdateState(SimpleLateralDebug *debug,
                          trajectory_analyzer_, debug, chassis);
   }
 
+  // 更新状态矩阵
   // State matrix update;
   // First four elements are fixed;
   if (enable_look_ahead_back_control_) {
@@ -683,6 +720,7 @@ void LatController::UpdateState(SimpleLateralDebug *debug,
   matrix_state_(1, 0) = debug->lateral_error_rate();
   matrix_state_(3, 0) = debug->heading_error_rate();
 
+  // 计算预览窗口内每个时间点的横向误差，并将这些误差存储在状态矩阵
   // Next elements are depending on preview window size;
   for (int i = 0; i < preview_window_; ++i) {
     const double preview_time = ts_ * (i + 1);
@@ -708,24 +746,34 @@ void LatController::UpdateState(SimpleLateralDebug *debug,
   }
 }
 
+// 更新状态空间矩阵
 void LatController::UpdateMatrix() {
   double v;
   // At reverse driving, replace the lateral translational motion dynamics with
   // the corresponding kinematic models
+  // 如果车辆处于倒档且未启用动态模型
   if (injector_->vehicle_state()->gear() == canbus::Chassis::GEAR_REVERSE &&
       !lat_based_lqr_controller_conf_.reverse_use_dynamic_model()) {
+    // 将速度 v 设置为车辆线速度的负值，并确保其不低于 -minimum_speed_protection_
     v = std::min(injector_->vehicle_state()->linear_velocity(),
                  -minimum_speed_protection_);
     matrix_a_(0, 2) = matrix_a_coeff_(0, 2) * v;
-  } else {
+  } 
+  // 否则
+  else {
+    // 将速度 v 设置为车辆线速度的正值，并确保其不低于 minimum_speed_protection_
     v = std::max(injector_->vehicle_state()->linear_velocity(),
                  minimum_speed_protection_);
     matrix_a_(0, 2) = 0.0;
   }
+
+  // 根据速度 v，更新状态矩阵 matrix_a_ 的特定元素
   matrix_a_(1, 1) = matrix_a_coeff_(1, 1) / v;
   matrix_a_(1, 3) = matrix_a_coeff_(1, 3) / v;
   matrix_a_(3, 1) = matrix_a_coeff_(3, 1) / v;
   matrix_a_(3, 3) = matrix_a_coeff_(3, 3) / v;
+
+  // 用 双线性变换（Tustin 变换） 将连续时间状态矩阵 matrix_a_ 离散化为 matrix_ad_
   Matrix matrix_i = Matrix::Identity(matrix_a_.cols(), matrix_a_.cols());
   matrix_ad_ = (matrix_i - ts_ * 0.5 * matrix_a_).inverse() *
                (matrix_i + ts_ * 0.5 * matrix_a_);
@@ -922,6 +970,7 @@ void LatController::UpdateDrivingOrientation() {
   driving_orientation_ = vehicle_state->heading();
   matrix_bd_ = matrix_b_ * ts_;
   // Reverse the driving direction if the vehicle is in reverse mode
+  // 如果是后退档，逆向车辆航向
   if (FLAGS_reverse_heading_control) {
     if (vehicle_state->gear() == canbus::Chassis::GEAR_REVERSE) {
       driving_orientation_ =

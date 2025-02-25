@@ -69,6 +69,7 @@ TrajectoryAnalyzer::TrajectoryAnalyzer(
   }
 }
 
+// 从前往后搜索轨迹中距离xy最近的点
 PathPoint TrajectoryAnalyzer::QueryMatchedPathPoint(const double x,
                                                     const double y) const {
   CHECK_GT(trajectory_points_.size(), 0U);
@@ -99,6 +100,7 @@ PathPoint TrajectoryAnalyzer::QueryMatchedPathPoint(const double x,
                               trajectory_points_[index_end], x, y);
 }
 
+// 根据自车状态投影到frenet坐标系，结算sd坐标以及s_dot和d_dot
 // reference: Optimal trajectory generation for dynamic street scenarios in a
 // Frenét Frame,
 // Moritz Werling, Julius Ziegler, Sören Kammel and Sebastian Thrun, ICRA 2010

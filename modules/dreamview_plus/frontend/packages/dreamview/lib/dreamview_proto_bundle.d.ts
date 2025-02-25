@@ -20372,7 +20372,7 @@ export namespace apollo {
         }
 
         /** Represents a ControlCommand. */
-        class ControlCommand implements IControlCommand {
+        class  implements IControlCommand {
 
             /**
              * Constructs a new ControlCommand.

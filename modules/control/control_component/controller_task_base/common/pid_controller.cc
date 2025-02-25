@@ -31,7 +31,7 @@ double PIDController::Control(const double error, const double dt) {
   double diff = 0;
   double output = 0;
 
-  if (first_hit_) {
+  if (first_hit_) { // 第一次执行
     first_hit_ = false;
   } else {
     diff = (error - previous_error_) / dt;

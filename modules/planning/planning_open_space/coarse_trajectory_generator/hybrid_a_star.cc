@@ -140,7 +140,7 @@ bool HybridAStar::AnalyticExpansion(
 
 bool HybridAStar::RSPCheck(
     const std::shared_ptr<ReedSheppPath> reeds_shepp_to_end) {
-  // 为什么只有一个点
+  // 一个结点中包含从上一个结点到该下一个结点的路径
   std::shared_ptr<Node3d> node = std::shared_ptr<Node3d>(new Node3d(
       reeds_shepp_to_end->x, reeds_shepp_to_end->y, reeds_shepp_to_end->phi,
       XYbounds_, planner_open_space_config_));
@@ -209,6 +209,7 @@ std::shared_ptr<Node3d> HybridAStar::LoadRSPinCS(
   return end_node;
 }
 
+// 很像自行车模型，但有不同，完全不考虑初始速度
 std::shared_ptr<Node3d> HybridAStar::Next_node_generator(
     std::shared_ptr<Node3d> current_node, size_t next_node_index) {
 
@@ -246,6 +247,7 @@ std::shared_ptr<Node3d> HybridAStar::Next_node_generator(
 
   // 采用离散积分形式进行扩展
   for (size_t i = 0; i < arc_length_ / step_size_; ++i) {
+    // yawD = v / L * tan(steering)
     const double next_phi = last_phi +
                             traveled_distance /
                             vehicle_param_.wheel_base() *
@@ -814,25 +816,29 @@ bool HybridAStar::Plan(
   }
   obstacles_linesegments_vec_ = std::move(obstacles_linesegments_vec);
 
-  // 计算起始位置框
-  Vec2d sposition(sx, sy);
-  Vec2d svec_to_center(
-          (vehicle_param_.front_edge_to_center() -
-           vehicle_param_.back_edge_to_center()) / 2.0,
-          (vehicle_param_.left_edge_to_center() -
-           vehicle_param_.right_edge_to_center()) / 2.0);
-  Vec2d scenter(sposition + svec_to_center.rotate(sphi));
-  Box2d sbox(scenter, sphi, vehicle_param_.length(), vehicle_param_.width());
+  // 车辆中心点和几何中心是两个不同的概念
+  // 在控制算法中，使用车辆中心点（如重心）而不是几何中心，可以更准确地描述车辆的运动行为，从而提高控制效果。
+  // 此处是将车辆中心点修正到几何中心点
 
-  // 计算末端位置框
-  Vec2d eposition(ex, ey);
-  Vec2d evec_to_center(
-          (vehicle_param_.front_edge_to_center() -
-           vehicle_param_.back_edge_to_center()) / 2.0,
-          (vehicle_param_.left_edge_to_center() -
-           vehicle_param_.right_edge_to_center()) / 2.0);
-  Vec2d ecenter(eposition + evec_to_center.rotate(ephi));
-  Box2d ebox(ecenter, ephi, vehicle_param_.length(), vehicle_param_.width());
+  // // 计算起始位置框
+  // Vec2d sposition(sx, sy);
+  // Vec2d svec_to_center(
+  //         (vehicle_param_.front_edge_to_center() -
+  //          vehicle_param_.back_edge_to_center()) / 2.0,
+  //         (vehicle_param_.left_edge_to_center() -
+  //          vehicle_param_.right_edge_to_center()) / 2.0);
+  // Vec2d scenter(sposition + svec_to_center.rotate(sphi));
+  // Box2d sbox(scenter, sphi, vehicle_param_.length(), vehicle_param_.width());
+
+  // // 计算末端位置框
+  // Vec2d eposition(ex, ey);
+  // Vec2d evec_to_center(
+  //         (vehicle_param_.front_edge_to_center() -
+  //          vehicle_param_.back_edge_to_center()) / 2.0,
+  //         (vehicle_param_.left_edge_to_center() -
+  //          vehicle_param_.right_edge_to_center()) / 2.0);
+  // Vec2d ecenter(eposition + evec_to_center.rotate(ephi));
+  // Box2d ebox(ecenter, ephi, vehicle_param_.length(), vehicle_param_.width());
 
   // 初始化起止信息和XY边界
   XYbounds_ = XYbounds;
@@ -857,7 +863,7 @@ bool HybridAStar::Plan(
   double map_time = Clock::NowInSeconds();
   grid_a_star_heuristic_generator_->GenerateDpMap(
       ex, ey, XYbounds_, obstacles_linesegments_vec_);
-  ADEBUG << "map time " << Clock::NowInSeconds() - map_time;
+  // ADEBUG << "map time " << Clock::NowInSeconds() - map_time;
 
   // 初始化搜索数据
 
@@ -868,13 +874,13 @@ bool HybridAStar::Plan(
   // Hybrid A* begins
   size_t explored_node_num = 0;
   size_t available_result_num = 0;
-  auto best_explored_num = explored_node_num;
-  auto best_available_result_num = available_result_num;
+  // auto best_explored_num = explored_node_num;
+  // auto best_available_result_num = available_result_num;
   double astar_start_time = Clock::NowInSeconds();
-  double heuristic_time = 0.0;
-  double rs_time = 0.0;
+  // double heuristic_time = 0.0;
+  // double rs_time = 0.0;
   double node_generator_time = 0.0;
-  double validity_check_time = 0.0;
+  // double validity_check_time = 0.0;
   size_t max_explored_num =
       planner_open_space_config_.warm_start_config().max_explored_num();
   size_t desired_explored_num = std::min(
@@ -900,8 +906,8 @@ bool HybridAStar::Plan(
       if (final_node_ == nullptr ||
           final_node_->GetTrajCost() > final_node->GetTrajCost()) {
         final_node_ = final_node;
-        best_explored_num = explored_node_num + 1;
-        best_available_result_num = available_result_num + 1;
+        // best_explored_num = explored_node_num + 1;
+        // best_available_result_num = available_result_num + 1;
       }
       available_result_num++;
     }
@@ -951,7 +957,7 @@ bool HybridAStar::Plan(
       }
       // validity_check_time += Clock::NowInSeconds() - validity_check_start_time;
 
-      // 
+      // 如果新节点不在开放集内，直接插入该结点
       if (open_set_.count(next_node->GetIndex()) == 0) {
         // 计算新节点的代价
         // const double start_time = Clock::NowInSeconds();
@@ -960,7 +966,7 @@ bool HybridAStar::Plan(
         // heuristic_time += end_time - start_time;
 
         // 新节点插入优先队列
-        temp_set.insert(next_node->GetIndex());
+        temp_set.insert(next_node->GetIndex()); // 为什么不直接在此处插入到open_set呢
         open_pq_.emplace(next_node, next_node->GetCost());
       }
     }

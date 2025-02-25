@@ -100,6 +100,8 @@ void LonController::Stop() { CloseLogFile(); }
 LonController::~LonController() { CloseLogFile(); }
 
 Status LonController::Init(std::shared_ptr<DependencyInjector> injector) {
+
+  // 加载配置
   if (!ControlTask::LoadConfig<LonBasedPidControllerConf>(
           &lon_based_pidcontroller_conf_)) {
     AERROR << "failed to load control conf";
@@ -107,6 +109,15 @@ Status LonController::Init(std::shared_ptr<DependencyInjector> injector) {
                   "failed to load lon control_conf");
   }
 
+  // 加载车辆标定表
+
+  // 不同的车辆控制接口不一致，Apollo 支持的线控车辆主要的控制接口是基于油门、刹车接口，
+  // 油门/刹车控制量与车辆的行驶速度是线性相关的，这个相关性车辆可能无法直接提供相应的
+  // 数据或计算公式，为了通过线控接口比较准确的控制车辆速度，需要进行作用量与观测值的
+  // 定量标定，获得相关性的关系。选取车辆在不同车速下，进行加速或减速直线行驶，记录
+  // 当前时刻的车体纵向的加速度。如此往复，记录不同速度下，急加速，缓加速，急减速，缓减速
+  // 等，形成一个标定表，如 modules/control/control_component/conf/calibration_table.pb.txt 
+  // 所示，打印出如下图所示。
   if (!ControlTask::LoadCalibrationTable(&calibration_table_)) {
     AERROR << "failed to load calibration table";
     return Status(ErrorCode::CONTROL_INIT_ERROR,
@@ -137,9 +148,13 @@ Status LonController::Init(std::shared_ptr<DependencyInjector> injector) {
   vehicle_param_.CopyFrom(
       common::VehicleConfigHelper::Instance()->GetConfig().vehicle_param());
 
+  // ？？
   SetDigitalFilterPitchAngle();
 
+  // 对标定表进行插值
   InitControlCalibrationTable();
+
+  // 初始化完成、
   controller_initialized_ = true;
 
   return Status::OK();
@@ -152,6 +167,7 @@ void LonController::SetDigitalFilterPitchAngle() {
   SetDigitalFilter(ts, cutoff_freq, &digital_filter_pitch_angle_);
 }
 
+// 初始化车辆标定表
 void LonController::InitControlCalibrationTable() {
   AINFO << "Control calibration table size is "
         << calibration_table_.calibration_size();
@@ -171,25 +187,31 @@ Status LonController::ComputeControlCommand(
     const canbus::Chassis *chassis,
     const planning::ADCTrajectory *planning_published_trajectory,
     control::ControlCommand *cmd) {
+
+  // 加载信息
   localization_ = localization;
   chassis_ = chassis;
   trajectory_message_ = planning_published_trajectory;
 
+  // 如果插值标定表无效，报错
   if (!control_interpolation_) {
     AERROR << "Fail to initialize calibration table.";
     return Status(ErrorCode::CONTROL_COMPUTE_ERROR,
                   "Fail to initialize calibration table.");
   }
 
+  // 如果轨迹分析器为空，或者传入新轨迹，重置分析器
   if (trajectory_analyzer_ == nullptr ||
       trajectory_analyzer_->seq_num() !=
           trajectory_message_->header().sequence_num()) {
     trajectory_analyzer_.reset(new TrajectoryAnalyzer(trajectory_message_));
   }
 
+  // 初始化debug信息
   auto debug = cmd->mutable_debug()->mutable_simple_lon_debug();
   debug->Clear();
 
+  // 初始化一些变量
   double brake_cmd = 0.0;
   double throttle_cmd = 0.0;
   double ts = lon_based_pidcontroller_conf_.ts();
@@ -197,15 +219,19 @@ Status LonController::ComputeControlCommand(
   bool enable_leadlag =
       lon_based_pidcontroller_conf_.enable_reverse_leadlag_compensation();
 
+  // 如果上一次控制时间有误，报错
   if (preview_time < 0.0) {
     const auto error_msg =
         absl::StrCat("Preview time set as: ", preview_time, " less than 0");
     AERROR << error_msg;
     return Status(ErrorCode::CONTROL_COMPUTE_ERROR, error_msg);
   }
+
+  // 计算纵向误差
   ComputeLongitudinalErrors(trajectory_analyzer_.get(), preview_time, ts,
                             debug);
 
+  // 限制纵向位置误差
   double station_error_limit =
       lon_based_pidcontroller_conf_.station_error_limit();
   double station_error_limited = 0.0;
@@ -218,7 +244,12 @@ Status LonController::ComputeControlCommand(
         debug->station_error(), -station_error_limit, station_error_limit);
   }
 
+  // 根据不同的场景设置PID控制器参数
+
+  // 如果是倒车档位
   if (trajectory_message_->gear() == canbus::Chassis::GEAR_REVERSE) {
+
+    // 如果处于维修区
     if (CheckPit::CheckInPit(debug, &lon_based_pidcontroller_conf_,
                              injector_->vehicle_state()->linear_velocity(),
                              trajectory_message_->is_replan())) {
@@ -239,7 +270,8 @@ Status LonController::ComputeControlCommand(
       speed_leadlag_controller_.SetLeadlag(
           lon_based_pidcontroller_conf_.reverse_speed_leadlag_conf());
     }
-  } else if (injector_->vehicle_state()->linear_velocity() <=
+  } 
+  else if (injector_->vehicle_state()->linear_velocity() <=
              lon_based_pidcontroller_conf_.switch_speed()) {
     if (CheckPit::CheckInPit(debug, &lon_based_pidcontroller_conf_,
                              injector_->vehicle_state()->linear_velocity(),
@@ -262,17 +294,21 @@ Status LonController::ComputeControlCommand(
         lon_based_pidcontroller_conf_.high_speed_pid_conf());
   }
 
+  // 调用PID控制器或者Leadlag控制器生成速度控制
   double speed_offset =
       station_pid_controller_.Control(station_error_limited, ts);
   if (enable_leadlag) {
     speed_offset = station_leadlag_controller_.Control(speed_offset, ts);
   }
 
+  // 限制纵向速度误差
   double speed_controller_input = 0.0;
   double speed_controller_input_limit =
       lon_based_pidcontroller_conf_.speed_controller_input_limit();
   double speed_controller_input_limited = 0.0;
   if (lon_based_pidcontroller_conf_.enable_speed_station_preview()) {
+    // 为什么增加一个误差量
+    // 因为仅位置误差没有办法考虑速度误差，所以必须加上速度误差
     speed_controller_input = speed_offset + debug->preview_speed_error();
   } else {
     speed_controller_input = speed_offset + debug->speed_error();
@@ -281,8 +317,8 @@ Status LonController::ComputeControlCommand(
       common::math::Clamp(speed_controller_input, -speed_controller_input_limit,
                           speed_controller_input_limit);
 
+  // 调用PID控制器或者Leadlag控制器生成加速度控制
   double acceleration_cmd_closeloop = 0.0;
-
   acceleration_cmd_closeloop =
       speed_pid_controller_.Control(speed_controller_input_limited, ts);
   debug->set_pid_saturation_status(
@@ -294,13 +330,17 @@ Status LonController::ComputeControlCommand(
         speed_leadlag_controller_.InnerstateSaturationStatus());
   }
 
+  // 如果是空档，重置PID控制器积分
   if (chassis->gear_location() == canbus::Chassis::GEAR_NEUTRAL) {
     speed_pid_controller_.Reset_integral();
     station_pid_controller_.Reset_integral();
   }
 
+  // 融合自车俯仰角
   double vehicle_pitch_rad =
       digital_filter_pitch_angle_.Filter(injector_->vehicle_state()->pitch());
+
+  // 将俯仰角转换为角度
   double vehicle_pitch =
       vehicle_pitch_rad * 180 / M_PI + FLAGS_pitch_offset_deg;
   ADEBUG << "[LON]vehicle_pitch is " << vehicle_pitch;
@@ -308,6 +348,8 @@ Status LonController::ComputeControlCommand(
   // TODO(ALL): confirm the slope_offset_compensation whether is positive or not
   // when vehicle move uphill
   // Resume: uphill: + , downhill: -
+  
+  // 计算坡度加速度补偿
   double slope_offset_compensation =
       lon_based_pidcontroller_conf_.use_opposite_slope_compensation() *
       GRA_ACC *
@@ -319,11 +361,13 @@ Status LonController::ComputeControlCommand(
 
   debug->set_slope_offset_compensation(slope_offset_compensation);
 
+  // 计算实际控制量
   double acceleration_cmd =
       acceleration_cmd_closeloop + debug->preview_acceleration_reference() +
       lon_based_pidcontroller_conf_.enable_slope_offset() *
           debug->slope_offset_compensation();
 
+  // ？？
   // Check the steer command in reverse trajectory if the current steer target
   // is larger than previous target, free the acceleration command, wait for
   // the current steer target
@@ -354,9 +398,15 @@ Status LonController::ComputeControlCommand(
   debug->set_is_full_stop_soft(false);
   auto previous_full_stop =
       injector_->Get_previous_lon_debug_info()->is_full_stop();
+
+  // 更新剩余进度
   GetPathRemain(debug);
+  // 判断停止是否因为到达目的地
   IsStopByDestination(debug);
+  // 判断是否车辆前方长时间停着行人
   IsPedestrianStopLongTerm(debug);
+
+  // 判断是否充分停止
   if (lon_based_pidcontroller_conf_.use_preview_reference_check() &&
       (std::fabs(debug->preview_acceleration_reference()) <=
        FLAGS_max_acceleration_when_stopped) &&
@@ -383,6 +433,7 @@ Status LonController::ComputeControlCommand(
         lon_based_pidcontroller_conf_.full_stop_path_remain_gain();
   }
 
+  // ？？又更新充分停止标记位
   if (((trajectory_message_->gear() == Chassis::GEAR_DRIVE) &&
        debug->path_remain() < max_path_remain_when_stopped_) ||
       ((trajectory_message_->gear() == Chassis::GEAR_REVERSE) &&
@@ -421,6 +472,7 @@ Status LonController::ComputeControlCommand(
     ADEBUG << "Not into full stop decision by path remain.";
   }
 
+  // 如果已经充分停止了，修正加速度输出，并且重置PID控制器
   if (debug->is_full_stop()) {
     acceleration_cmd =
         (chassis->gear_location() == canbus::Chassis::GEAR_REVERSE)
@@ -432,6 +484,7 @@ Status LonController::ComputeControlCommand(
     station_pid_controller_.Reset_integral();
   }
 
+  // 如果是软性停止，修正加速度输出，并且重置PID控制器
   if (debug->is_full_stop_soft()) {
     if (chassis->gear_location() != canbus::Chassis::GEAR_REVERSE) {
       acceleration_cmd =
@@ -451,6 +504,8 @@ Status LonController::ComputeControlCommand(
     speed_pid_controller_.Reset_integral();
     station_pid_controller_.Reset_integral();
   }
+
+  // 查询车辆标定表转化成车辆的控制接口如油门踏板或刹车踏板
 
   double throttle_lowerbound =
       std::max(vehicle_param_.throttle_deadzone(),
@@ -568,7 +623,10 @@ Status LonController::ComputeControlCommand(
             calibration_value, throttle_cmd, brake_cmd, debug->is_full_stop());
   }
 
+  // 填充具体的控制量，输出给车辆底盘
   // if the car is driven by acceleration, disgard the cmd->throttle and brake
+
+  // 填充throttle/brake/acceleration
   cmd->set_throttle(throttle_cmd);
   cmd->set_brake(brake_cmd);
   if (lon_based_pidcontroller_conf_.use_acceleration_lookup_limit()) {
@@ -577,6 +635,7 @@ Status LonController::ComputeControlCommand(
     cmd->set_acceleration(acceleration_cmd);
   }
 
+  // 填充gear_location
   if (std::fabs(injector_->vehicle_state()->linear_velocity()) <=
           vehicle_param_.max_abs_speed_when_stopped() ||
       chassis->gear_location() == trajectory_message_->gear() ||
@@ -586,6 +645,7 @@ Status LonController::ComputeControlCommand(
     cmd->set_gear_location(chassis->gear_location());
   }
 
+  // 填充speed (itfc: interface)
   if (lon_based_pidcontroller_conf_.use_speed_itfc()) {
     reference_spd_cmd_ = reference_spd_ + debug->speed_offset();
     if ((reference_spd_ <=
@@ -618,6 +678,7 @@ Status LonController::Reset() {
 
 std::string LonController::Name() const { return name_; }
 
+// 计算纵向的前三阶误差
 void LonController::ComputeLongitudinalErrors(
     const TrajectoryAnalyzer *trajectory_analyzer, const double preview_time,
     const double ts, SimpleLongitudinalDebug *debug) {
@@ -631,16 +692,21 @@ void LonController::ComputeLongitudinalErrors(
   double d_matched = 0.0;
   double d_dot_matched = 0.0;
 
+  // 找到当前车辆位置在轨迹线上的最佳匹配点
   auto vehicle_state = injector_->vehicle_state();
   auto matched_point = trajectory_analyzer->QueryMatchedPathPoint(
       vehicle_state->x(), vehicle_state->y());
 
+  // 将车辆当前位置的坐标（VRF坐标，车体坐标系），投影到最佳匹配轨迹点坐标系（Frenet）
+  // 求出当前车辆位置投影到S轴（Frenet纵向方向）的距离
   trajectory_analyzer->ToTrajectoryFrame(
       vehicle_state->x(), vehicle_state->y(), vehicle_state->heading(),
       vehicle_state->linear_velocity(), matched_point, &s_matched,
       &s_dot_matched, &d_matched, &d_dot_matched);
 
   // double current_control_time = Time::Now().ToSecond();
+
+  // 计算上次控制位置和当前控制位置
   double current_control_time = ::apollo::cyber::Clock::NowInSeconds();
   double preview_control_time = current_control_time + preview_time;
 
@@ -664,29 +730,38 @@ void LonController::ComputeLongitudinalErrors(
   debug->mutable_preview_reference_point()->mutable_path_point()->set_y(
       preview_point.path_point().y());
 
-  ADEBUG << "matched point:" << matched_point.DebugString();
-  ADEBUG << "reference point:" << reference_point.DebugString();
-  ADEBUG << "preview point:" << preview_point.DebugString();
+  // ADEBUG << "matched point:" << matched_point.DebugString();
+  // ADEBUG << "reference point:" << reference_point.DebugString();
+  // ADEBUG << "preview point:" << preview_point.DebugString();
 
+  // 计算角度误差
   double heading_error = common::math::NormalizeAngle(vehicle_state->heading() -
                                                       matched_point.theta());
+  
+  // 计算自车在参考线坐标上的纵向速度和加速度
   double lon_speed = vehicle_state->linear_velocity() * std::cos(heading_error);
   double lon_acceleration =
       vehicle_state->linear_acceleration() * std::cos(heading_error);
   double one_minus_kappa_lat_error = 1 - reference_point.path_point().kappa() *
                                              vehicle_state->linear_velocity() *
                                              std::sin(heading_error);
-
+  // 写入纵向位置误差
   debug->set_station_reference(reference_point.path_point().s());
   debug->set_current_station(s_matched);
   debug->set_station_error(reference_point.path_point().s() - s_matched);
+
+  // 写入纵向速度误差
   debug->set_speed_reference(reference_point.v());
   debug->set_current_speed(lon_speed);
   debug->set_speed_error(reference_point.v() - s_dot_matched);
+
+  // 写入纵向加速度误差
   debug->set_acceleration_reference(reference_point.a());
   debug->set_current_acceleration(lon_acceleration);
   debug->set_acceleration_error(reference_point.a() -
                                 lon_acceleration / one_minus_kappa_lat_error);
+  
+  // 写入纵向加加速度误差
   double jerk_reference =
       (debug->acceleration_reference() - previous_acceleration_reference_) / ts;
   double lon_jerk =
@@ -694,13 +769,18 @@ void LonController::ComputeLongitudinalErrors(
   debug->set_jerk_reference(jerk_reference);
   debug->set_current_jerk(lon_jerk);
   debug->set_jerk_error(jerk_reference - lon_jerk / one_minus_kappa_lat_error);
+
+  // 记录参考和当前加速度
   previous_acceleration_reference_ = debug->acceleration_reference();
   previous_acceleration_ = debug->current_acceleration();
 
+  // 设置之前的误差
   debug->set_preview_station_error(preview_point.path_point().s() - s_matched);
   debug->set_preview_speed_error(preview_point.v() - s_dot_matched);
   debug->set_preview_speed_reference(preview_point.v());
   debug->set_preview_acceleration_reference(preview_point.a());
+
+  // 更新参考速度??
   if (lon_based_pidcontroller_conf_.use_speed_itfc()) {
     reference_spd_ = reference_point.v();
   }
@@ -722,6 +802,7 @@ void LonController::GetPathRemain(SimpleLongitudinalDebug *debug) {
   static constexpr double kBackwardAccThreshold = 1e-1;
   static constexpr double kParkingSpeed = 0.1;
 
+  // 提取停止点索引
   if (trajectory_message_->gear() == canbus::Chassis::GEAR_DRIVE) {
     while (stop_index < trajectory_message_->trajectory_point_size()) {
       auto &current_trajectory_point =
@@ -745,6 +826,8 @@ void LonController::GetPathRemain(SimpleLongitudinalDebug *debug) {
       ++stop_index;
     }
   }
+
+  // 如果停止点索引超出阈值，进行修正
   ADEBUG << "stop_index is, " << stop_index;
   if (stop_index == trajectory_message_->trajectory_point_size()) {
     --stop_index;
@@ -755,6 +838,8 @@ void LonController::GetPathRemain(SimpleLongitudinalDebug *debug) {
       ADEBUG << "the last point found in path and speed > speed_deadzone";
     }
   }
+
+  // 记录剩余进度s
   debug->set_path_remain(
       trajectory_message_->trajectory_point(stop_index).path_point().s() -
       debug->current_station());
@@ -787,6 +872,7 @@ bool LonController::IsPedestrianStopLongTerm(SimpleLongitudinalDebug *debug) {
   ADEBUG << "Current stop reason is \n" << stop_reason.DebugString();
   StopReasonCode stop_reason_code = stop_reason.reason_code();
 
+  // 判断停止原因
   if (stop_reason_code == StopReasonCode::STOP_REASON_PEDESTRIAN ||
       stop_reason_code == StopReasonCode::STOP_REASON_OBSTACLE) {
     ADEBUG << "[IsPedestrianStopLongTerm]Stop reason for pedestrian.";
@@ -799,7 +885,9 @@ bool LonController::IsPedestrianStopLongTerm(SimpleLongitudinalDebug *debug) {
          << ", is_stop_by_pedestrian_previous: "
          << is_stop_by_pedestrian_previous_;
 
+  // 如果是由于避让行人停止的
   if (is_stop_by_pedestrian_) {
+    // 如果刚开始避让，那么进行计时
     if (!(is_stop_by_pedestrian_ && is_stop_by_pedestrian_previous_)) {
       start_time_ = ::apollo::cyber::Clock::NowInSeconds();
       ADEBUG << "Stop reason for pedestrian, start time(s) is " << start_time_;
@@ -816,6 +904,7 @@ bool LonController::IsPedestrianStopLongTerm(SimpleLongitudinalDebug *debug) {
 
   is_stop_by_pedestrian_previous_ = is_stop_by_pedestrian_;
 
+  // 如果计时器超出阈值，返回true
   if (wait_time_diff_ > lon_based_pidcontroller_conf_.pedestrian_stop_time()) {
     ADEBUG << "Current pedestrian stop lasting time(s) is " << wait_time_diff_
            << ", larger than threshold: "
