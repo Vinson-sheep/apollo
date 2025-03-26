@@ -73,6 +73,7 @@ NaviSpeedTsGraph::NaviSpeedTsGraph() {
   Reset(kDefaultSStep, kDefaultSMax, 0.0, 0.0, 0.0);
 }
 
+// 重置
 void NaviSpeedTsGraph::Reset(double s_step, double s_max, double start_v,
                              double start_a, double start_da) {
   CHECK_GT(s_step, 0.0);
@@ -89,6 +90,7 @@ void NaviSpeedTsGraph::Reset(double s_step, double s_max, double start_v,
   constraints_.resize(point_num);
 }
 
+// 更新约束
 void NaviSpeedTsGraph::UpdateConstraints(
     const NaviSpeedTsConstraints& constraints) {
   CheckConstraints(constraints);
@@ -194,7 +196,7 @@ void NaviSpeedTsGraph::UpdateObstacleConstraints(double distance,
 Status NaviSpeedTsGraph::Solve(std::vector<NaviSpeedTsPoint>* output) {
   CHECK_NOTNULL(output);
 
-  // make constraints of the first point
+  // 初始化起点约束
   auto& constraints = constraints_[0];
   constraints.v_max = start_v_;
   constraints.v_preffered = start_v_;
@@ -203,8 +205,11 @@ Status NaviSpeedTsGraph::Solve(std::vector<NaviSpeedTsPoint>* output) {
   constraints.da_max = start_da_;
   constraints.da_preffered = start_da_;
 
-  // preprocess v_max base on b_max
+  // v^2 = u^2 + 2 * a * s
+
+  // 从后向前传播约束（倒序）
   for (ssize_t i = constraints_.size() - 2; i >= 0; i--) {
+    // 获取后一个约束
     const auto& next = constraints_[i + 1];
     auto& cur = constraints_[i];
     cur.v_max =
@@ -213,7 +218,7 @@ Status NaviSpeedTsGraph::Solve(std::vector<NaviSpeedTsPoint>* output) {
     cur.v_preffered = std::min(cur.v_max, cur.v_preffered);
   }
 
-  // preprocess v_max base on a_max
+  // 从前向后传播约束（正序）
   for (size_t i = 1; i < constraints_.size(); i++) {
     const auto& prev = constraints_[i - 1];
     auto& cur = constraints_[i];
@@ -223,7 +228,7 @@ Status NaviSpeedTsGraph::Solve(std::vector<NaviSpeedTsPoint>* output) {
     cur.v_preffered = std::min(cur.v_max, cur.v_preffered);
   }
 
-  // preprocess v_preffered base on b_preffered
+  // 从后向前传播约束（倒序）
   for (ssize_t i = constraints_.size() - 2; i >= 0; i--) {
     const auto& next = constraints_[i + 1];
     auto& cur = constraints_[i];
@@ -232,7 +237,7 @@ Status NaviSpeedTsGraph::Solve(std::vector<NaviSpeedTsPoint>* output) {
                                cur.v_preffered);
   }
 
-  // preprocess v_preffered base on a_preffered
+  // 从前向后传播约束（正序）
   for (size_t i = 1; i < constraints_.size(); i++) {
     const auto& prev = constraints_[i - 1];
     auto& cur = constraints_[i];
@@ -241,10 +246,9 @@ Status NaviSpeedTsGraph::Solve(std::vector<NaviSpeedTsPoint>* output) {
                                cur.v_preffered);
   }
 
+  // 初始化输出点
   auto& points = *output;
   points.resize(constraints_.size());
-
-  // compute the first point
   auto& point = points[0];
   point.s = 0.0;
   point.t = 0.0;
@@ -252,8 +256,9 @@ Status NaviSpeedTsGraph::Solve(std::vector<NaviSpeedTsPoint>* output) {
   point.a = start_a_;
   point.da = start_da_;
 
-  // compute the remaining points
+  // 计算时间曲线
   for (size_t i = 1; i < points.size(); i++) {
+    
     const auto& prev = points[i - 1];
     const auto& constraints = constraints_[i];
     auto& cur = points[i];

@@ -78,14 +78,24 @@ bool NaviPathDecider::Init(const PlannerNaviConfig& config) {
 
 Status NaviPathDecider::Execute(Frame* frame,
                                 ReferenceLineInfo* const reference_line_info) {
+  // 不作任何处理
   NaviTask::Execute(frame, reference_line_info);
+
+  // 记录自车状态
   vehicle_state_ = frame->vehicle_state();
+
+  // 记录参考线ID
   cur_reference_line_lane_id_ = reference_line_info->Lanes().Id();
+
+  // 处理参考线
   auto ret = Process(reference_line_info->reference_line(),
                      frame->PlanningStartPoint(), frame->obstacles(),
                      reference_line_info->path_decision(),
                      reference_line_info->mutable_path_data());
-  RecordDebugInfo(reference_line_info->path_data());
+
+  // RecordDebugInfo(reference_line_info->path_data());
+
+  // 后处理
   if (ret != Status::OK()) {
     reference_line_info->SetDrivable(false);
     AERROR << "Reference Line " << reference_line_info->Lanes().Id()
@@ -94,18 +104,23 @@ Status NaviPathDecider::Execute(Frame* frame,
   return ret;
 }
 
+// 
 apollo::common::Status NaviPathDecider::Process(
     const ReferenceLine& reference_line,
     const common::TrajectoryPoint& init_point,
     const std::vector<const Obstacle*>& obstacles,
     PathDecision* const path_decision, PathData* const path_data) {
-  CHECK_NOTNULL(path_decision);
-  CHECK_NOTNULL(path_data);
+  // CHECK_NOTNULL(path_decision);
+  // CHECK_NOTNULL(path_data);
+  
+  // 计算初始状态
   start_plan_point_.set_x(vehicle_state_.x());
   start_plan_point_.set_y(vehicle_state_.y());
   start_plan_point_.set_theta(vehicle_state_.heading());
   start_plan_v_ = vehicle_state_.linear_velocity();
   start_plan_a_ = vehicle_state_.linear_acceleration();
+
+  // 如果存在给定初始状态，直接使用
   if (start_plan_point_from_ == 1) {
     // start plan point from planning schedule
     start_plan_point_.set_x(init_point.path_point().x());
@@ -115,7 +130,7 @@ apollo::common::Status NaviPathDecider::Process(
     start_plan_a_ = init_point.a();
   }
 
-  // intercept path points from reference line
+  // 从参考线中获取离散路径点 
   std::vector<apollo::common::PathPoint> path_points;
   if (!GetBasicPathData(reference_line, &path_points)) {
     AERROR << "Get path points from reference line failed";
@@ -128,12 +143,16 @@ apollo::common::Status NaviPathDecider::Process(
   // y-axis to adc.
   double dest_ref_line_y = path_points[0].y();
 
-  ADEBUG << "in current plan cycle, adc to ref line distance : "
-         << dest_ref_line_y << "lane id : " << cur_reference_line_lane_id_;
+  // ADEBUG << "in current plan cycle, adc to ref line distance : "
+  //        << dest_ref_line_y << "lane id : " << cur_reference_line_lane_id_;
+
+  // 将所有路径点校正到Y轴上
   MoveToDestLane(dest_ref_line_y, &path_points);
 
+  // 根据障碍物避让距离调整路径点
   KeepLane(dest_ref_line_y, &path_points);
 
+  // 设置目标路径
   path_data->SetReferenceLine(&(reference_line_info_->reference_line()));
   if (!path_data->SetDiscretizedPath(DiscretizedPath(std::move(path_points)))) {
     AERROR << "Set path data failed.";
@@ -147,6 +166,8 @@ apollo::common::Status NaviPathDecider::Process(
 void NaviPathDecider::MoveToDestLane(
     const double dest_ref_line_y,
     std::vector<common::PathPoint>* const path_points) {
+
+  // 如果偏移距离过大，认为数据异常，直接返回
   double dest_lateral_distance = std::fabs(dest_ref_line_y);
   if (dest_lateral_distance < max_keep_lane_distance_) {
     return;
@@ -164,9 +185,11 @@ void NaviPathDecider::MoveToDestLane(
       lateral_shift_value > 0.0
           ? (lateral_shift_value - move_dest_lane_compensation_)
           : lateral_shift_value;
-  ADEBUG << "in current plan cycle move to dest lane, adc shift to dest "
-            "reference line : "
-         << lateral_shift_value;
+  // ADEBUG << "in current plan cycle move to dest lane, adc shift to dest "
+  //           "reference line : "
+  //        << lateral_shift_value;
+
+  // 对所有路径点进行Y轴校正
   std::transform(path_points->begin(), path_points->end(), path_points->begin(),
                  [lateral_shift_value](common::PathPoint& old_path_point) {
                    common::PathPoint new_path_point = old_path_point;
@@ -181,16 +204,28 @@ void NaviPathDecider::KeepLane(
     const double dest_ref_line_y,
     std::vector<common::PathPoint>* const path_points) {
   double dest_lateral_distance = std::fabs(dest_ref_line_y);
+
+  // 如果dest_lateral_distance合法
   if (dest_lateral_distance <= max_keep_lane_distance_) {
+
+    // 提取原始参考线
     auto& reference_line = reference_line_info_->reference_line();
+
+    // 提取障碍物
     auto obstacles = frame_->obstacles();
+
+    // 提取路径决策
     auto* path_decision = reference_line_info_->path_decision();
+
+    // 计算避让距离
     double actual_dest_point_y =
         NudgeProcess(reference_line, *path_points, obstacles, *path_decision,
                      vehicle_state_);
 
     double actual_dest_lateral_distance = std::fabs(actual_dest_point_y);
     double actual_shift_y = 0.0;
+
+    // 如果确实要避让，更新actual_shift_y
     if (actual_dest_lateral_distance > min_keep_lane_offset_) {
       double lateral_shift_value = 0.0;
       lateral_shift_value =
@@ -203,8 +238,10 @@ void NaviPathDecider::KeepLane(
       actual_shift_y = std::copysign(lateral_shift_value, actual_dest_point_y);
     }
 
-    ADEBUG << "in current plan cycle keep lane, actual dest : "
-           << actual_dest_point_y << " adc shift to dest : " << actual_shift_y;
+    // ADEBUG << "in current plan cycle keep lane, actual dest : "
+    //        << actual_dest_point_y << " adc shift to dest : " << actual_shift_y;
+
+    // 对所有路径点进行偏移
     std::transform(
         path_points->begin(), path_points->end(), path_points->begin(),
         [actual_shift_y](common::PathPoint& old_path_point) {
@@ -226,11 +263,14 @@ void NaviPathDecider::RecordDebugInfo(const PathData& path_data) {
       {path_points.begin(), path_points.end()});
 }
 
+// 从参考线中提取路径点
 bool NaviPathDecider::GetBasicPathData(
     const ReferenceLine& reference_line,
     std::vector<common::PathPoint>* const path_points) {
-  CHECK_NOTNULL(path_points);
+  
+  // CHECK_NOTNULL(path_points);
 
+  // 计算目标路径长度
   double min_path_len = config_.min_path_length();
   // get min path plan length s = v0 * t + 1 / 2.0 * a * t^2
   double path_len =
@@ -238,6 +278,7 @@ bool NaviPathDecider::GetBasicPathData(
       start_plan_a_ * pow(config_.min_look_forward_time(), 2) / 2.0;
   path_len = std::max(path_len, min_path_len);
 
+  // 如果参考线太短，直接返回
   const double reference_line_len = reference_line.Length();
   if (reference_line_len < path_len) {
     AERROR << "Reference line is too short to generate path trajectory( s = "
@@ -245,8 +286,7 @@ bool NaviPathDecider::GetBasicPathData(
     return false;
   }
 
-  // get the start plan point project s on reference line and get the length of
-  // reference line
+  // 获取起始规划点在参考线上的投影
   auto start_plan_point_project = reference_line.GetReferencePoint(
       start_plan_point_.x(), start_plan_point_.y());
   common::SLPoint sl_point;
@@ -256,9 +296,11 @@ bool NaviPathDecider::GetBasicPathData(
               "line.";
     return false;
   }
+
+  // 获取投影点的s
   auto start_plan_point_project_s = sl_point.has_s() ? sl_point.s() : 0.0;
 
-  // get basic path points form reference_line
+  // 从s开始对参考线进行抽样
   ADEBUG << "Basic path data len ; " << reference_line_len;
   static constexpr double KDenseSampleUnit = 0.50;
   static constexpr double KSparseSmapleUnit = 2.0;
@@ -269,6 +311,7 @@ bool NaviPathDecider::GetBasicPathData(
     path_points->emplace_back(path_point);
   }
 
+  // 抽样失败，直接返回
   if (path_points->empty()) {
     AERROR << "path poins is empty.";
     return false;
@@ -327,6 +370,7 @@ bool NaviPathDecider::IsSafeChangeLane(const ReferenceLine& reference_line,
   return true;
 }
 
+// 计算横向避让距离
 double NaviPathDecider::NudgeProcess(
     const ReferenceLine& reference_line,
     const std::vector<common::PathPoint>& path_data_points,
@@ -338,17 +382,21 @@ double NaviPathDecider::NudgeProcess(
   // get nudge latteral position
   int lane_obstacles_num = 0;
   static constexpr double KNudgeEpsilon = 1e-6;
+  
+  // 计算横向避让距离
   double nudge_distance = obstacle_decider_.GetNudgeDistance(
       obstacles, reference_line, path_decision, path_data_points, vehicle_state,
       &lane_obstacles_num);
   // adjust plan start point
+
+  // 如果确实需要避让，则直接使用避让距离
   if (std::fabs(nudge_distance) > KNudgeEpsilon) {
     ADEBUG << "need latteral nudge distance : " << nudge_distance;
     nudge_position_y = nudge_distance;
     last_lane_id_to_nudge_flag_[cur_reference_line_lane_id_] = true;
-  } else {
-    // no nudge distance but current lane has obstacles ,keepping path in
-    // the last nudge path direction
+  } 
+  else {
+    // 如果没有算出避让距离，
     bool last_plan_has_nudge = false;
     if (last_lane_id_to_nudge_flag_.find(cur_reference_line_lane_id_) !=
         last_lane_id_to_nudge_flag_.end()) {
@@ -356,10 +404,14 @@ double NaviPathDecider::NudgeProcess(
           last_lane_id_to_nudge_flag_[cur_reference_line_lane_id_];
     }
 
+    // 上一次在避让，且当前存在障碍物
     if (last_plan_has_nudge && lane_obstacles_num != 0) {
+      // 保持上次决策
       ADEBUG << "Keepping last nudge path direction";
       nudge_position_y = vehicle_state_.y();
-    } else {
+    } 
+    // 无需避让
+    else {
       // not need nudge or not need nudge keepping
       last_lane_id_to_nudge_flag_[cur_reference_line_lane_id_] = false;
       nudge_position_y = path_data_points[0].y();

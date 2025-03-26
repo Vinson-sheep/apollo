@@ -69,25 +69,26 @@ Status NaviPlanning::Init(const PlanningConfig& config) {
   // 在PlanningBase::Init进行初始化，没有执行实质性内容
   PlanningBase::Init(config);
 
-  // clear planning history
+  // 清除历史记录
   injector_->history()->Clear();
 
-  // clear planning status
+  // 清除planning_context
   injector_->planning_context()->mutable_planning_status()->Clear();
 
-  // 与on_lane_planning相比
-  // 缺少了reference_line_provider_和hdmap_
-
-  // 路径规划调度器
+  // 加载planner
   LoadPlanner();
+
+  // 异常处理
   if (!planner_) {
     return Status(
         ErrorCode::PLANNING_ERROR,
         "planning is not initialized with config : " + config_.DebugString());
   }
 
+  // 初始化traffic_decider
   traffic_decider_.Init(injector_);
 
+  // 初始化planner
   return planner_->Init(injector_, FLAGS_planner_config_path);
 }
 
@@ -109,7 +110,7 @@ Status NaviPlanning::InitFrame(const uint32_t sequence_num,
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
-// 首先是InitFrameData()，里面对hdmap、vehicle_state、obstacle、traffic_lights进行赋值
+  // 首先是InitFrameData()，里面对hdmap、vehicle_state、obstacle、traffic_lights进行赋值
   // 其次，构建ReferenceLineInfo结构，我之前提到过ReferenceLineInfo结构里包含了reference_lines信息，
   // 还包括了vehicle_state、obstacles等信息。到这里，就构建完了Frame结构与ReferenceLineInfo结构体
   auto status = frame_->Init(
@@ -228,6 +229,7 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
   const uint32_t frame_num = static_cast<uint32_t>(seq_num_++);
   status = InitFrame(frame_num, stitching_trajectory.back(), vehicle_state);
 
+  // 如果frame不存在，则直接返回
   if (!frame_) {
     const std::string msg = "Failed to init frame";
     AERROR << msg;
@@ -239,11 +241,14 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
     return;
   }
 
+  // 更新injector中的规划起始状态
   injector_->ego_info()->Update(stitching_trajectory.back(), vehicle_state);
 
   // if (FLAGS_enable_record_debug) {
   //   frame_->RecordInputDebug(trajectory_pb->mutable_debug());
   // }
+
+  // 设置轨迹初始时间
   trajectory_pb->mutable_latency_stats()->set_init_frame_time_ms(
       Clock::NowInSeconds() - start_timestamp);
 
@@ -281,14 +286,13 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
     return;
   }
 
-  // Use planning pad message to make driving decisions
+  // 读取pad信息，更新车道优先级
   if (FLAGS_enable_planning_pad_msg) {
     const auto& pad_msg_driving_action = frame_->GetPadMsgDrivingAction();
     ProcessPadMsg(pad_msg_driving_action);
   }
 
   // 交通决策信息，对每条参考线做处理
-  // 可以查看traffic_rules下的交通决策
   for (auto& ref_line_info : *frame_->mutable_reference_line_info()) {
     // 交通决策执行函数
     auto traffic_status =
@@ -305,9 +309,10 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
   // 路径规划主入口
   status = Plan(start_timestamp, stitching_trajectory, trajectory_pb);
 
+  // 计算规划耗时
   const auto time_diff_ms = (Clock::NowInSeconds() - start_timestamp) * 1000;
-  // ADEBUG << "total planning time spend: " << time_diff_ms << " ms.";
 
+  // 记录规划耗时
   trajectory_pb->mutable_latency_stats()->set_total_time_ms(time_diff_ms);
   // ADEBUG << "Planning latency: "
   //        << trajectory_pb->latency_stats().DebugString();
@@ -342,18 +347,25 @@ void NaviPlanning::RunOnce(const LocalView& local_view,
   FillPlanningPb(start_timestamp, trajectory_pb);
   ADEBUG << "Planning pb:" << trajectory_pb->header().DebugString();
 
+  // 记录历史帧信息
   auto seq_num = frame_->SequenceNum();
   injector_->frame_history()->Add(seq_num, std::move(frame_));
 }
-ProcessPadMsg
-void NaviPlanning::(PadMessage::DrivingAction drvie_action) {
+
+// 处理pad信息
+void NaviPlanning::ProcessPadMsg(PadMessage::DrivingAction drvie_action) {
+
+  // 仅当自动驾驶模式时处理
   if (FLAGS_use_navigation_mode) {
     std::map<std::string, uint32_t> lane_id_to_priority;
     auto& ref_line_info_group = *frame_->mutable_reference_line_info();
     if (drvie_action != PadMessage::NONE) {
       using LaneInfoPair = std::pair<std::string, double>;
       std::string current_lane_id;
+
       switch (drvie_action) {
+
+        // 跟随当前车道
         case PadMessage::FOLLOW: {
           AINFO << "Received follow drive action";
           std::string current_lane_id = GetCurrentLaneId();
@@ -362,6 +374,7 @@ void NaviPlanning::(PadMessage::DrivingAction drvie_action) {
           }
           break;
         }
+        // 左转
         case PadMessage::CHANGE_LEFT: {
           AINFO << "Received change left lane drive action";
           std::vector<LaneInfoPair> lane_info_group;
@@ -371,6 +384,7 @@ void NaviPlanning::(PadMessage::DrivingAction drvie_action) {
           }
           break;
         }
+        // 右转
         case PadMessage::CHANGE_RIGHT: {
           AINFO << "Received change right lane drive action";
           std::vector<LaneInfoPair> lane_info_group;
@@ -380,6 +394,7 @@ void NaviPlanning::(PadMessage::DrivingAction drvie_action) {
           }
           break;
         }
+        // 
         case PadMessage::PULL_OVER: {
           AINFO << "Received pull over drive action";
           // to do
@@ -397,18 +412,23 @@ void NaviPlanning::(PadMessage::DrivingAction drvie_action) {
       }
     }
 
+    // 如果存在目标车道
     if (!target_lane_id_.empty()) {
       static constexpr uint32_t KTargetRefLinePriority = 0;
       static constexpr uint32_t kOtherRefLinePriority = 10;
+      // 遍历所有参考线信息
       for (auto& ref_line_info : ref_line_info_group) {
         auto lane_id = ref_line_info.Lanes().Id();
         ADEBUG << "lane_id : " << lane_id;
         lane_id_to_priority[lane_id] = kOtherRefLinePriority;
+        // 如果参考线对应的车道是目标车道，则提高该车道优先级
         if (lane_id == target_lane_id_) {
           lane_id_to_priority[lane_id] = KTargetRefLinePriority;
           ADEBUG << "target lane_id : " << lane_id;
         }
       }
+
+      // 更新车道优先级
       frame_->UpdateReferenceLinePriority(lane_id_to_priority);
     }
   }

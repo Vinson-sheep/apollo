@@ -87,15 +87,23 @@ Status NaviPlanner::Init(const std::shared_ptr<DependencyInjector>& injector,
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
-  AINFO << "In NaviPlanner::Init()";
+  // AINFO << "In NaviPlanner::Init()";
+
+  // 注册NaviPathDecider和NaviSpeedDecider
   RegisterTasks();
+
+  // 加载配置
   PlannerNaviConfig planner_conf;
   LoadConfig<PlannerNaviConfig>(config_path, &planner_conf);
+
+  // 将已注册的task插入到tasks
   for (const auto task : planner_conf.task()) {
     tasks_.emplace_back(
         task_factory_.CreateObject(static_cast<NaviTaskType>(task)));
     AINFO << "Created task:" << tasks_.back()->Name();
   }
+
+  // 初始化所有task
   for (auto& task : tasks_) {
     if (!task->Init(planner_conf)) {
       const std::string msg =
@@ -109,25 +117,35 @@ Status NaviPlanner::Init(const std::shared_ptr<DependencyInjector>& injector,
 
 Status NaviPlanner::Plan(const TrajectoryPoint& planning_init_point,
                          Frame* frame, ADCTrajectory* ptr_computed_trajectory) {
-  // NaviPlanner is only used in navigation mode based on the real-time relative
-  // map.
+
+  // 如果不是自动驾驶模式，直接返回
   if (!FLAGS_use_navigation_mode) {
     const std::string msg = "NaviPlanner is only used in navigation mode.";
     AERROR << msg;
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
+  // 遍历所有参考线信息
   size_t success_line_count = 0;
   for (auto& reference_line_info : *frame->mutable_reference_line_info()) {
+
+    // 获取优先级
     uint32_t priority = reference_line_info.GetPriority();
+
+    // 设置优先级？
     reference_line_info.SetCost(priority * kStraightForwardLineCost);
+
+    // 如果优先级不合法，不进行规划
     if (priority != KDestLanePriority) {
       reference_line_info.SetDrivable(false);
       continue;
     }
+
+    // 对该参考线进行规划
     auto status =
         PlanOnReferenceLine(planning_init_point, frame, &reference_line_info);
 
+    // 后处理
     if (status.ok() && reference_line_info.IsDrivable()) {
       success_line_count += 1;
     } else {
@@ -152,11 +170,17 @@ Status NaviPlanner::Plan(const TrajectoryPoint& planning_init_point,
 Status NaviPlanner::PlanOnReferenceLine(
     const TrajectoryPoint& planning_init_point, Frame* frame,
     ReferenceLineInfo* reference_line_info) {
+
+  // 如果需要变道，则增加额外代价
   if (!reference_line_info->IsChangeLanePath() &&
       reference_line_info->IsNeighborLanePath()) {
     reference_line_info->AddCost(kStraightForwardLineCost);
   }
-  ADEBUG << "planning start point:" << planning_init_point.DebugString();
+
+
+  // ADEBUG << "planning start point:" << planning_init_point.DebugString();
+
+  // 产生初始的速度轮廓
   auto* heuristic_speed_data = reference_line_info->mutable_speed_data();
   auto speed_profile =
       GenerateInitSpeedProfile(planning_init_point, reference_line_info);
@@ -168,9 +192,14 @@ Status NaviPlanner::PlanOnReferenceLine(
 
   auto ret = Status::OK();
 
+  // 遍历所有的task
   for (auto& task : tasks_) {
     const double start_timestamp = Clock::NowInSeconds();
+
+    // 执行task
     ret = task->Execute(frame, reference_line_info);
+
+    // 异常处理
     if (!ret.ok()) {
       AERROR << "Failed to run tasks[" << task->Name()
              << "], Error message: " << ret.error_message();
@@ -188,6 +217,7 @@ Status NaviPlanner::PlanOnReferenceLine(
 
   // RecordObstacleDebugInfo(reference_line_info);
 
+  // 如果路径为空，则插入停止轨迹
   if (reference_line_info->path_data().Empty()) {
     ADEBUG << "Path fallback.";
     GenerateFallbackPathProfile(reference_line_info,
@@ -195,12 +225,14 @@ Status NaviPlanner::PlanOnReferenceLine(
     reference_line_info->AddCost(kPathOptimizationFallbackClost);
   }
 
+  // 如果速度为空，则插入刹车速度
   if (!ret.ok() || reference_line_info->speed_data().empty()) {
     ADEBUG << "Speed fallback.";
     GenerateFallbackSpeedProfile(reference_line_info->mutable_speed_data());
     reference_line_info->AddCost(kSpeedOptimizationFallbackClost);
   }
 
+  // 正好路径和速度
   DiscretizedTrajectory trajectory;
   if (!reference_line_info->CombinePathAndSpeedProfile(
           planning_init_point.relative_time(),
@@ -210,20 +242,25 @@ Status NaviPlanner::PlanOnReferenceLine(
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
+  // 遍历所有的障碍物
   for (const auto* obstacle :
        reference_line_info->path_decision()->obstacles().Items()) {
+    // 跳过虚拟障碍物
     if (obstacle->IsVirtual()) {
       continue;
     }
+    // 跳过静态障碍物
     if (!obstacle->IsStatic()) {
       continue;
     }
+    // 如果存在纵向停止障碍物，加入额外代价
     if (obstacle->LongitudinalDecision().has_stop()) {
       static constexpr double kRefrenceLineStaticObsCost = 1e3;
       reference_line_info->AddCost(kRefrenceLineStaticObsCost);
     }
   }
 
+  // 对轨迹进行最终校验
   if (FLAGS_enable_trajectory_check) {
     if (ConstraintChecker::ValidTrajectory(trajectory) !=
         ConstraintChecker::Result::VALID) {
@@ -233,6 +270,7 @@ Status NaviPlanner::PlanOnReferenceLine(
     }
   }
 
+  // 发布轨迹
   reference_line_info->SetTrajectory(trajectory);
   reference_line_info->SetDrivable(true);
   return Status::OK();
