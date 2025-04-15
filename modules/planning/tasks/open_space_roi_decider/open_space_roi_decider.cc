@@ -739,10 +739,14 @@ void OpenSpaceRoiDecider::AddBoundaryKeyPoint(
   }
 }
 
+// 根据停车位信息、附近路径和当前帧信息，计算停车位的边界，并将其划分为多个线段存储
+// 在roi_parking_boundary中，同时计算停车位的二维边界（ROI_xy_boundary）并进行车辆位置检查。
 bool OpenSpaceRoiDecider::GetParkingBoundary(
     const ParkingInfo &parking_info, const hdmap::Path &nearby_path,
     Frame *const frame,
     std::vector<std::vector<common::math::Vec2d>> *const roi_parking_boundary) {
+
+  // 获取停车位角点和帧信息
   auto left_top = parking_info.corner_points[0];
   ADEBUG << std::fixed << "left_top: " << left_top.x() << ", " << left_top.y();
   auto left_down = parking_info.corner_points[3];
@@ -760,6 +764,7 @@ bool OpenSpaceRoiDecider::GetParkingBoundary(
          << origin_point.y();
   const auto &origin_heading = frame->open_space_info().origin_heading();
 
+  // 计算角点在参考线上的投影
   double left_top_s = 0.0;
   double left_top_l = 0.0;
   double right_top_s = 0.0;
@@ -770,6 +775,9 @@ bool OpenSpaceRoiDecider::GetParkingBoundary(
     return false;
   }
 
+  // 坐标变换
+  // 将四个角点的坐标相对于origin_point进行平移，并根据origin_heading进行旋转，
+  // 目的是将停车位角点坐标转换到以origin_point为原点、origin_heading为 0 度方向的局部坐标系下，方便后续计算
   left_top -= origin_point;
   left_top.SelfRotate(-origin_heading);
   left_down -= origin_point;
@@ -779,8 +787,9 @@ bool OpenSpaceRoiDecider::GetParkingBoundary(
   right_down -= origin_point;
   right_down.SelfRotate(-origin_heading);
 
-  const double center_line_s = (left_top_s + right_top_s) / 2.0;
-  std::vector<Vec2d> left_lane_boundary;
+  // 获取道路边界信息
+  const double center_line_s = (left_top_s + right_top_s) / 2.0;  // 中心s
+  std::vector<Vec2d> left_lane_boundary;  // 
   std::vector<Vec2d> right_lane_boundary;
   // The pivot points on the central lane, mapping with the key points on
   // the left lane boundary.
@@ -807,9 +816,7 @@ bool OpenSpaceRoiDecider::GetParkingBoundary(
                   &center_lane_s_left, &center_lane_s_right,
                   &left_lane_road_width, &right_lane_road_width);
 
-  // If smaller than zero, the parking spot is on the right of the lane
-  // Left, right, down or opposite of the boundary is decided when viewing the
-  // parking spot upward
+  // 根据average_l判断停车位在车道的左侧还是右侧，分别进行不同的计算
   const double average_l = (left_top_l + right_top_l) / 2.0;
   std::vector<Vec2d> boundary_points;
 
@@ -997,12 +1004,13 @@ bool OpenSpaceRoiDecider::GetParkingBoundary(
     }
   }
 
-  // Fuse line segments into convex contraints
+  // 将不规则边界变换为凸边界
   if (!FuseLineSegments(roi_parking_boundary)) {
     AERROR << "FuseLineSegments failed in parking ROI";
     return false;
   }
-  // Get xy boundary
+
+  // 计算所有点的x和y坐标的最小值和最大值，得到ROI_xy_boundary
   auto xminmax = std::minmax_element(
       boundary_points.begin(), boundary_points.end(),
       [](const Vec2d &a, const Vec2d &b) { return a.x() < b.x(); });
@@ -1015,9 +1023,12 @@ bool OpenSpaceRoiDecider::GetParkingBoundary(
       frame->mutable_open_space_info()->mutable_ROI_xy_boundary();
   xy_boundary->assign(ROI_xy_boundary.begin(), ROI_xy_boundary.end());
 
+  // 对车辆坐标进行变换
   Vec2d vehicle_xy = Vec2d(vehicle_state_.x(), vehicle_state_.y());
   vehicle_xy -= origin_point;
   vehicle_xy.SelfRotate(-origin_heading);
+
+  // 判断车辆是否再停车位二维边界内
   if (vehicle_xy.x() < ROI_xy_boundary[0] ||
       vehicle_xy.x() > ROI_xy_boundary[1] ||
       vehicle_xy.y() < ROI_xy_boundary[2] ||
@@ -1280,39 +1291,54 @@ bool OpenSpaceRoiDecider::GetParkAndGoBoundary(
   return true;
 }
 
+// 从HD地图中获取停车位
 bool OpenSpaceRoiDecider::GetParkingSpot(Frame *const frame,
                                          ParkingInfo *parking_info) {
+  // 输入有效性检查
   if (frame == nullptr) {
     AERROR << "Invalid frame, fail to GetParkingSpotFromMap from frame. ";
     return false;
   }
+
+  // 获取目标停车位的 ID
   const auto &parking_spot_id_string =
       frame->open_space_info().target_parking_spot_id();
   hdmap::Id parking_spot_id = hdmap::MakeMapId(parking_spot_id_string);
-  auto parking_spot = hdmap_->GetParkingSpaceById(parking_spot_id);
+  auto parking_spot = hdmap_->GetParkingSpaceById(parking_spot_id); // 核心函数
+
+  // 获取附近路径
   if (!nearby_path_) {
     GetNearbyPath(frame->local_view().planning_command->lane_follow_command(),
-                  parking_spot, &nearby_path_);
+                  parking_spot, &nearby_path_); // 核心函数
   }
-  // points in polygon is always clockwise
+
+  // 处理停车位的角点
   auto points = parking_spot->polygon().points();
-  OpenSpaceRoiUtil::UpdateParkingPointsOrder(*nearby_path_, &points);
+  OpenSpaceRoiUtil::UpdateParkingPointsOrder(*nearby_path_, &points); // 对这些角点的顺序进行更新
+
+  // 计算停车位的中心点
   Vec2d center_point(0, 0);
   for (size_t i = 0; i < points.size(); i++) {
     center_point += points[i];
   }
   center_point /= 4.0;
+
+  // 获取车道的航向角和投影信息
   double lane_heading = 0;
   parking_info->center_point = center_point;
   nearby_path_->GetHeadingAlongPath(center_point, &lane_heading);
   double s, l;
   nearby_path_->GetProjection(center_point, &s, &l);
+
+  // 判断停车位是否在路径左侧
   if (l > 0) {
     parking_info->is_on_left = true;
     std::swap(points[1], points[3]);
   } else {
     parking_info->is_on_left = false;
   }
+
+  // 判断停车类型
   double diff_angle = common::math::AngleDiff(
       lane_heading, parking_spot->parking_space().heading());
   if (std::fabs(diff_angle) < M_PI / 3.0) {
@@ -1320,6 +1346,8 @@ bool OpenSpaceRoiDecider::GetParkingSpot(Frame *const frame,
   } else {
     parking_info->parking_type = ParkingType::VERTICAL_PARKING;
   }
+
+  // 再次确认停车类型
   parking_info->corner_points = points;
   double parallel_dist =
       parking_info->corner_points[0].DistanceTo(parking_info->corner_points[1]);
@@ -1816,11 +1844,15 @@ void OpenSpaceRoiDecider::GetAllLaneSegments(
   }
 }
 
+// 根据给定的路由响应和停车位信息，找到距离停车位最近且在路由规划内的车道，
+// 同时考虑车辆当前位置与该车道的关系，最终构建并返回包含该车道及其后续车道的路径。
 bool OpenSpaceRoiDecider::GetNearbyPath(
     const apollo::routing::RoutingResponse &routing_response,
     const ParkingSpaceInfoConstPtr &parking_spot,
     std::shared_ptr<hdmap::Path> *nearby_path) {
   LaneInfoConstPtr nearest_lane;
+
+  // 输入有效性检查
   if (nullptr == parking_spot) {
     AERROR << "The parking spot id is invalid!" << parking_spot->id().id();
     return false;
@@ -1832,8 +1864,12 @@ bool OpenSpaceRoiDecider::GetNearbyPath(
            << parking_spot->id().id();
     return false;
   }
+
+  // 获取路由中的所有车道段
   std::vector<routing::LaneSegment> lane_segments;
   GetAllLaneSegments(routing_response, &lane_segments);
+
+  // 查找距离停车位最近且在路由规划内的车道
   bool has_found_nearest_lane = false;
   size_t nearest_lane_index = 0;
   for (auto id : overlap_ids) {
@@ -1864,9 +1900,7 @@ bool OpenSpaceRoiDecider::GetNearbyPath(
               "GetParkingSpot!";
   }
 
-  // Get the lane nearest to the current position of the vehicle. If the
-  // vehicle has not reached the nearest lane to the parking spot, set the
-  // lane nearest to the vehicle as "nearest_lane".
+  // 考虑车辆当前位置与最近车道的关系
   LaneInfoConstPtr nearest_lane_to_vehicle;
   auto point = common::util::PointFactory::ToPointENU(vehicle_state_);
   double vehicle_lane_s = 0.0;
@@ -1891,7 +1925,7 @@ bool OpenSpaceRoiDecider::GetNearbyPath(
     }
   }
 
-  // Find parking spot by getting nearestlane
+  // 构建附近路径
   ParkingSpaceInfoConstPtr target_parking_spot = nullptr;
   LaneSegment nearest_lanesegment =
       LaneSegment(nearest_lane, nearest_lane->accumulate_s().front(),
@@ -1922,6 +1956,7 @@ bool OpenSpaceRoiDecider::GetNearbyPath(
   }
   return true;
 }
+
 bool OpenSpaceRoiDecider::AdjustPointsOrderToClockwise(
     std::vector<Vec2d> *polygon) {
   if (!OpenSpaceRoiUtil::IsPolygonClockwise(*polygon)) {

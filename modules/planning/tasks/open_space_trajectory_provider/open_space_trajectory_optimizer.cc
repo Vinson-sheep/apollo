@@ -190,7 +190,9 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
       // TODO(Jinyun): Further testing
       const auto smoother_start_timestamp = std::chrono::system_clock::now();
       if (FLAGS_use_iterative_anchoring_smoother) {
-        AINFO << "use iterative anchoring smoother";
+        // AINFO << "use iterative anchoring smoother";
+
+        // DL-IAPS and PJSO
         if (!GenerateDecoupledTraj(
                 xWS_vec[i], last_time_u(1, 0), init_v, obstacles_vertices_vec,
                 &state_result_ds_vec[i], &control_result_ds_vec[i],
@@ -202,11 +204,14 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
               "iterative anchoring smoothing problem failed to solve");
         }
       } else {
+        
         // const double start_system_timestamp =
         //     std::chrono::duration<double>(
         //         std::chrono::system_clock::now().time_since_epoch())
         //         .count();
         // AINFO << "use distance approach parallel smoother";
+
+        // TDR-OBCA
         if (!GenerateDistanceApproachTraj(
                 xWS_vec[i], uWS_vec[i], XYbounds, obstacles_edges_num,
                 obstacles_A, obstacles_b, obstacles_vertices_vec, last_time_u,
@@ -857,6 +862,7 @@ void OpenSpaceTrajectoryOptimizer::CombineTrajectories(
   *dual_n_result_ds = std::move(dual_n_result_ds_);
 }
 
+// DL-IAPS and PJSO
 bool OpenSpaceTrajectoryOptimizer::GenerateDecoupledTraj(
     const Eigen::MatrixXd& xWS, const double init_a, const double init_v,
     const std::vector<std::vector<Vec2d>>& obstacles_vertices_vec,
