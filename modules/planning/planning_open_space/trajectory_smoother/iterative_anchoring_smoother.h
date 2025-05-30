@@ -40,6 +40,9 @@
 
 namespace apollo {
 namespace planning {
+
+// Dual Loop Iterative Anchoring Path Smoothing
+// 双循环迭代锚点路径平滑算法
 class IterativeAnchoringSmoother {
  public:
   IterativeAnchoringSmoother(
