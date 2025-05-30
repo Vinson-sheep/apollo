@@ -100,64 +100,72 @@ bool PathOptimizerUtil::OptimizePath(
     const std::vector<std::pair<double, double>>& ddl_bounds, double dddl_bound,
     const PiecewiseJerkPathConfig& config, std::vector<double>* x,
     std::vector<double>* dx, std::vector<double>* ddx) {
-  // num of knots
-  const auto& lat_boundaries = path_boundary.boundary();
-  const size_t kNumKnots = lat_boundaries.size();
-  AINFO << "kNumKnots: " << kNumKnots;
 
+  // 提取约束边界
+  const auto& lat_boundaries = path_boundary.boundary();
+
+  // 提取结点数目
+  const size_t kNumKnots = lat_boundaries.size();
+
+  // 提取deltaS
   double delta_s = path_boundary.delta_s();
+
+  // 初始化优化器
   PiecewiseJerkPathProblem piecewise_jerk_problem(kNumKnots, delta_s,
                                                   init_state.second);
 
+  // 提取边界约束 ？？
   const auto& adc_vertex_constraints = path_boundary.adc_vertex_bound();
   const auto& extra_bound = path_boundary.extra_path_bound();
-  // get reference towing l
+
+  // 拖挂式车辆（如卡车牵引的拖车）的横向偏移量
   std::vector<double> towing_l_ref;
   for (auto& path_boundary_pt : path_boundary) {
     towing_l_ref.emplace_back(path_boundary_pt.towing_l);
   }
-  PrintCurves print_curve;
-  for (size_t i = 0; i < adc_vertex_constraints.size(); i++) {
-    print_curve.AddPoint(path_boundary.label() + "_vertex_l_lower",
-                         adc_vertex_constraints[i].rear_axle_s,
-                         adc_vertex_constraints[i].lower_bound);
-    print_curve.AddPoint(path_boundary.label() + "_vertex_l_upper",
-                         adc_vertex_constraints[i].rear_axle_s,
-                         adc_vertex_constraints[i].upper_bound);
-  }
-  for (size_t i = 0; i < extra_bound.size(); i++) {
-    print_curve.AddPoint(path_boundary.label() + "_conner_l_lower",
-                         extra_bound[i].rear_axle_s,
-                         extra_bound[i].lower_bound);
-    print_curve.AddPoint(path_boundary.label() + "_conner_l_upper",
-                         extra_bound[i].rear_axle_s,
-                         extra_bound[i].upper_bound);
-  }
+
+  // PrintCurves print_curve;
+  // for (size_t i = 0; i < adc_vertex_constraints.size(); i++) {
+  //   print_curve.AddPoint(path_boundary.label() + "_vertex_l_lower",
+  //                        adc_vertex_constraints[i].rear_axle_s,
+  //                        adc_vertex_constraints[i].lower_bound);
+  //   print_curve.AddPoint(path_boundary.label() + "_vertex_l_upper",
+  //                        adc_vertex_constraints[i].rear_axle_s,
+  //                        adc_vertex_constraints[i].upper_bound);
+  // }
+  // for (size_t i = 0; i < extra_bound.size(); i++) {
+  //   print_curve.AddPoint(path_boundary.label() + "_conner_l_lower",
+  //                        extra_bound[i].rear_axle_s,
+  //                        extra_bound[i].lower_bound);
+  //   print_curve.AddPoint(path_boundary.label() + "_conner_l_upper",
+  //                        extra_bound[i].rear_axle_s,
+  //                        extra_bound[i].upper_bound);
+  // }
   // double adc_half_width =
   // apollo::common::VehicleConfigHelper::GetConfig().vehicle_param().width()
   // / 2.0;
-  for (size_t i = 0; i < kNumKnots; i++) {
-    double s = i * path_boundary.delta_s() + path_boundary.start_s();
-    print_curve.AddPoint(path_boundary.label() + "_ref_l", s, l_ref[i]);
-    print_curve.AddPoint(path_boundary.label() + "_towing_ref_l", s,
-                         towing_l_ref[i]);
-    print_curve.AddPoint(path_boundary.label() + "_ref_l_weight", s,
-                         l_ref_weight[i]);
-    print_curve.AddPoint(path_boundary.label() + "_l_lower", s,
-                         lat_boundaries[i].first);
-    print_curve.AddPoint(path_boundary.label() + "_l_upper", s,
-                         lat_boundaries[i].second);
-    print_curve.AddPoint(path_boundary.label() + "_ddl_lower", s,
-                         ddl_bounds[i].first);
-    print_curve.AddPoint(path_boundary.label() + "_ddl_upper", s,
-                         ddl_bounds[i].second);
-  }
-  print_curve.AddPoint(path_boundary.label() + "_opt_l",
-                       path_boundary.start_s(), init_state.second[0]);
-  print_curve.AddPoint(path_boundary.label() + "_opt_dl",
-                       path_boundary.start_s(), init_state.second[1]);
-  print_curve.AddPoint(path_boundary.label() + "_opt_ddl",
-                       path_boundary.start_s(), init_state.second[2]);
+  // for (size_t i = 0; i < kNumKnots; i++) {
+  //   double s = i * path_boundary.delta_s() + path_boundary.start_s();
+  //   print_curve.AddPoint(path_boundary.label() + "_ref_l", s, l_ref[i]);
+  //   print_curve.AddPoint(path_boundary.label() + "_towing_ref_l", s,
+  //                        towing_l_ref[i]);
+  //   print_curve.AddPoint(path_boundary.label() + "_ref_l_weight", s,
+  //                        l_ref_weight[i]);
+  //   print_curve.AddPoint(path_boundary.label() + "_l_lower", s,
+  //                        lat_boundaries[i].first);
+  //   print_curve.AddPoint(path_boundary.label() + "_l_upper", s,
+  //                        lat_boundaries[i].second);
+  //   print_curve.AddPoint(path_boundary.label() + "_ddl_lower", s,
+  //                        ddl_bounds[i].first);
+  //   print_curve.AddPoint(path_boundary.label() + "_ddl_upper", s,
+  //                        ddl_bounds[i].second);
+  // }
+  // print_curve.AddPoint(path_boundary.label() + "_opt_l",
+  //                      path_boundary.start_s(), init_state.second[0]);
+  // print_curve.AddPoint(path_boundary.label() + "_opt_dl",
+  //                      path_boundary.start_s(), init_state.second[1]);
+  // print_curve.AddPoint(path_boundary.label() + "_opt_ddl",
+  //                      path_boundary.start_s(), init_state.second[2]);
   // TODO(Hongyi): update end_state settings
   std::array<double, 3U> end_state_weight = {config.weight_end_state_l(),
                                              config.weight_end_state_dl(),
@@ -187,33 +195,33 @@ bool PathOptimizerUtil::OptimizePath(
 
   bool success = piecewise_jerk_problem.Optimize(config.max_iteration());
 
-  auto end_time = std::chrono::system_clock::now();
-  std::chrono::duration<double> diff = end_time - start_time;
-  ADEBUG << "Path Optimizer used time: " << diff.count() * 1000 << " ms.";
+  // auto end_time = std::chrono::system_clock::now();
+  // std::chrono::duration<double> diff = end_time - start_time;
+  // ADEBUG << "Path Optimizer used time: " << diff.count() * 1000 << " ms.";
 
   if (!success) {
-    AERROR << path_boundary.label() << "piecewise jerk path optimizer failed";
-    AINFO << "init s(" << init_state.first[0] << "," << init_state.first[1]
-          << "," << init_state.first[2] << ") l (" << init_state.second[0]
-          << "," << init_state.second[1] << "," << init_state.second[2];
-    AINFO << "dx bound" << config.lateral_derivative_bound_default();
-    AINFO << "jerk bound" << dddl_bound;
-    print_curve.PrintToLog();
+    // AERROR << path_boundary.label() << "piecewise jerk path optimizer failed";
+    // AINFO << "init s(" << init_state.first[0] << "," << init_state.first[1]
+    //       << "," << init_state.first[2] << ") l (" << init_state.second[0]
+    //       << "," << init_state.second[1] << "," << init_state.second[2];
+    // AINFO << "dx bound" << config.lateral_derivative_bound_default();
+    // AINFO << "jerk bound" << dddl_bound;
+    // print_curve.PrintToLog();
     return false;
   }
 
-  *x = piecewise_jerk_problem.opt_x();
-  *dx = piecewise_jerk_problem.opt_dx();
-  *ddx = piecewise_jerk_problem.opt_ddx();
-  PrintBox print_box("opt_l_box");
-  for (size_t i = 0; i < kNumKnots; i++) {
-    double s = i * path_boundary.delta_s() + path_boundary.start_s();
-    print_curve.AddPoint(path_boundary.label() + "_opt_l", s, (*x)[i]);
-    print_curve.AddPoint(path_boundary.label() + "_opt_dl", s, (*dx)[i]);
-    print_curve.AddPoint(path_boundary.label() + "_opt_ddl", s, (*ddx)[i]);
-    print_box.AddAdcBox(s, (*x)[i], std::atan((*dx)[i]), true);
-  }
-  print_curve.PrintToLog();
+  // *x = piecewise_jerk_problem.opt_x();
+  // *dx = piecewise_jerk_problem.opt_dx();
+  // *ddx = piecewise_jerk_problem.opt_ddx();
+  // PrintBox print_box("opt_l_box");
+  // for (size_t i = 0; i < kNumKnots; i++) {
+  //   double s = i * path_boundary.delta_s() + path_boundary.start_s();
+  //   print_curve.AddPoint(path_boundary.label() + "_opt_l", s, (*x)[i]);
+  //   print_curve.AddPoint(path_boundary.label() + "_opt_dl", s, (*dx)[i]);
+  //   print_curve.AddPoint(path_boundary.label() + "_opt_ddl", s, (*ddx)[i]);
+  //   print_box.AddAdcBox(s, (*x)[i], std::atan((*dx)[i]), true);
+  // }
+  // print_curve.PrintToLog();
   // print_box.PrintToLog();
   return true;
 }

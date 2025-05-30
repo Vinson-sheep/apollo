@@ -53,14 +53,14 @@ Status PublicRoadPlanner::Plan(const TrajectoryPoint& planning_start_point,
   auto result = scenario_->Process(planning_start_point, frame);
 
   // if (FLAGS_enable_record_debug) {
-  //   auto scenario_debug = ptr_computed_trajectory->mutable_debug()
-  //                             ->mutable_planning_data()
-  //                             ->mutable_scenario();
+  //   auto scenario_debug = ptr_comput
   //   scenario_debug->set_scenario_plugin_type(scenario_->Name());
   //   scenario_debug->set_stage_plugin_type(scenario_->GetStage());
   //   scenario_debug->set_msg(scenario_->GetMsg());
   // }
-
+// ed_trajectory->mutable_debug()
+  //                             ->mutable_planning_data()
+  //                             ->mutable_scenario();
   // 如果执行成功，第二次更新信息
   if (result.GetScenarioStatus() == ScenarioStatusType::STATUS_DONE) {
     // only updates scenario manager when previous scenario's status is
