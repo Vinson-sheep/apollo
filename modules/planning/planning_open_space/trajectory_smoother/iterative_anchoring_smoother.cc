@@ -47,6 +47,8 @@ using apollo::common::math::Vec2d;
 IterativeAnchoringSmoother::IterativeAnchoringSmoother(
     const PlannerOpenSpaceConfig& planner_open_space_config) {
   // TODO(Jinyun, Yu): refactor after stabilized.
+
+  // 读取车辆动力学参数
   const auto& vehicle_param =
       common::VehicleConfigHelper::Instance()->GetConfig().vehicle_param();
   ego_length_ = vehicle_param.length();
@@ -57,21 +59,29 @@ IterativeAnchoringSmoother::IterativeAnchoringSmoother(
   AINFO << "config:" << planner_open_space_config_.DebugString();
 }
 
+// 输入:
+// xWs 参考点
+// init_a 初始加速度
+// init_v 初始速度
+// obstacles_vertices_vec 障碍物轨迹
 bool IterativeAnchoringSmoother::Smooth(
     const Eigen::MatrixXd& xWS, const double init_a, const double init_v,
     const std::vector<std::vector<Vec2d>>& obstacles_vertices_vec,
     DiscretizedTrajectory* discretized_trajectory) {
-  if (xWS.cols() < 2) {
-    AERROR << "reference points size smaller than two, smoother early "
-              "returned";
-    return false;
-  }
-  const auto start_timestamp = std::chrono::system_clock::now();
 
-  // Set gear of the trajectory
+  // // 安全性校验
+  // if (xWS.cols() < 2) {
+  //   AERROR << "reference points size smaller than two, smoother early "
+  //             "returned";
+  //   return false;
+  // }
+
+  // const auto start_timestamp = std::chrono::system_clock::now();
+
+  // 确定前后档位
   gear_ = CheckGear(xWS);
 
-  // Set obstacle in form of linesegments
+  // 将障碍物转化为linesegments形式
   std::vector<std::vector<LineSegment2d>> obstacles_linesegments_vec;
   for (const auto& obstacle_vertices : obstacles_vertices_vec) {
     size_t vertices_num = obstacle_vertices.size();
@@ -85,7 +95,7 @@ bool IterativeAnchoringSmoother::Smooth(
   }
   obstacles_linesegments_vec_ = std::move(obstacles_linesegments_vec);
 
-  // Interpolate the traj
+  // 将原始路径转换为DiscretizedPath
   DiscretizedPath warm_start_path;
   size_t xWS_size = xWS.cols();
   double accumulated_s = 0.0;
@@ -97,11 +107,12 @@ bool IterativeAnchoringSmoother::Smooth(
     path_point.set_x(xWS(0, i));
     path_point.set_y(xWS(1, i));
     path_point.set_theta(xWS(2, i));
-    path_point.set_s(accumulated_s);
+    path_point.set_s(accumulated_s); // 新增累计长度
     warm_start_path.push_back(std::move(path_point));
     last_path_point = cur_path_point;
   }
 
+  // 将原始路径进行等距离插值
   const double interpolated_delta_s =
       planner_open_space_config_.iterative_anchoring_smoother_config()
           .interpolated_delta_s();
@@ -114,6 +125,7 @@ bool IterativeAnchoringSmoother::Smooth(
     interpolated_warm_start_point2ds.emplace_back(point2d.x(), point2d.y());
   }
 
+  // 判断是否能够使用初始曲率？？
   const size_t interpolated_size = interpolated_warm_start_point2ds.size();
   if (interpolated_size < 4) {
     AERROR << "interpolated_warm_start_path smaller than 4, can't enforce "
@@ -127,10 +139,11 @@ bool IterativeAnchoringSmoother::Smooth(
     enforce_initial_kappa_ = true;
   }
 
-  // Adjust heading to ensure heading continuity
+  // 插值后可能导致起止航向跟前后第二个点不对应，此处对前后第二个点进行处理
+  // PS: 是否真的有必要这样处理？第三第四个点就不考虑？
   AdjustStartEndHeading(xWS, &interpolated_warm_start_point2ds);
 
-  // Reset path profile by discrete point heading and curvature estimation
+  // 重新计算heading/s/kappa/kappaD
   DiscretizedPath interpolated_warm_start_path;
   if (!SetPathProfile(interpolated_warm_start_point2ds,
                       &interpolated_warm_start_path)) {
@@ -138,28 +151,28 @@ bool IterativeAnchoringSmoother::Smooth(
     return false;
   }
 
-  // Generate feasible bounds for each path point
+  // 根据障碍物确定路径点的优化半径
   std::vector<double> bounds;
   if (!GenerateInitialBounds(interpolated_warm_start_path, &bounds)) {
     AERROR << "Generate initial bounds failed, path point to close to obstacle";
     return false;
   }
 
-  // Check initial path collision avoidance, if it fails, smoother assumption
-  // fails. Try reanchoring
+  // 提取与障碍物碰撞的路径点
   input_colliding_point_index_.clear();
   if (!CheckCollisionAvoidance(interpolated_warm_start_path,
                                &input_colliding_point_index_)) {
-    AERROR << "Interpolated input path points colliding with obstacle";
-    // if (!ReAnchoring(colliding_point_index, &interpolated_warm_start_path)) {
-    //   AERROR << "Fail to reanchor colliding input path points";
-    //   return false;
-    // }
+    // AERROR << "Interpolated input path points colliding with obstacle";
+    // 如果路径和障碍物有碰撞，则重新计算锚点
+    if (!ReAnchoring(colliding_point_index, &interpolated_warm_start_path)) {
+      AERROR << "Fail to reanchor colliding input path points";
+      return false;
+    }
   }
 
-  const auto path_smooth_start_timestamp = std::chrono::system_clock::now();
+  // const auto path_smooth_start_timestamp = std::chrono::system_clock::now();
 
-  // Smooth path to have smoothed x, y, phi, kappa and s
+  // 循环迭代平滑路径点，直到没有产生新的碰撞
   DiscretizedPath smoothed_path_points;
   if (!SmoothPath(interpolated_warm_start_path, bounds,
                   &smoothed_path_points)) {
@@ -187,15 +200,15 @@ bool IterativeAnchoringSmoother::Smooth(
   //                        interpolated_warm_start_path[i].theta());
   // }
   // print_curve.PrintToLog();
-  const auto path_smooth_end_timestamp = std::chrono::system_clock::now();
-  std::chrono::duration<double> path_smooth_diff =
-      path_smooth_end_timestamp - path_smooth_start_timestamp;
-  ADEBUG << "iterative anchoring path smoother time: "
-         << path_smooth_diff.count() * 1000.0 << " ms.";
+  // const auto path_smooth_end_timestamp = std::chrono::system_clock::now();
+  // std::chrono::duration<double> path_smooth_diff =
+  //     path_smooth_end_timestamp - path_smooth_start_timestamp;
+  // ADEBUG << "iterative anchoring path smoother time: "
+  //        << path_smooth_diff.count() * 1000.0 << " ms.";
 
-  const auto speed_smooth_start_timestamp = std::chrono::system_clock::now();
+  // const auto speed_smooth_start_timestamp = std::chrono::system_clock::now();
 
-  // Smooth speed to have smoothed v and a
+  // 进行速度分配
   SpeedData smoothed_speeds;
   if (!SmoothSpeed(init_a, init_v, smoothed_path_points.Length(),
                    &smoothed_speeds)) {
@@ -209,44 +222,47 @@ bool IterativeAnchoringSmoother::Smooth(
   //   return false;
   // }
 
-  const auto speed_smooth_end_timestamp = std::chrono::system_clock::now();
-  std::chrono::duration<double> speed_smooth_diff =
-      speed_smooth_end_timestamp - speed_smooth_start_timestamp;
-  ADEBUG << "iterative anchoring speed smoother time: "
-         << speed_smooth_diff.count() * 1000.0 << " ms.";
+  // const auto speed_smooth_end_timestamp = std::chrono::system_clock::now();
+  // std::chrono::duration<double> speed_smooth_diff =
+  //     speed_smooth_end_timestamp - speed_smooth_start_timestamp;
+  // ADEBUG << "iterative anchoring speed smoother time: "
+  //        << speed_smooth_diff.count() * 1000.0 << " ms.";
 
-  // Combine path and speed
+  // 结合路径和速度生成最终轨迹
   if (!CombinePathAndSpeed(smoothed_path_points, smoothed_speeds,
                            discretized_trajectory)) {
     return false;
   }
 
+  // 如果是后退档，则调整theta/s/kappa/v/a
   AdjustPathAndSpeedByGear(discretized_trajectory);
 
-  const auto end_timestamp = std::chrono::system_clock::now();
-  std::chrono::duration<double> diff = end_timestamp - start_timestamp;
-  ADEBUG << "iterative anchoring smoother total time: " << diff.count() * 1000.0
-         << " ms.";
+  // const auto end_timestamp = std::chrono::system_clock::now();
+  // std::chrono::duration<double> diff = end_timestamp - start_timestamp;
+  // ADEBUG << "iterative anchoring smoother total time: " << diff.count() * 1000.0
+  //        << " ms.";
 
-  ADEBUG << "discretized_trajectory size " << discretized_trajectory->size();
+  // ADEBUG << "discretized_trajectory size " << discretized_trajectory->size();
   return true;
 }
 
 void IterativeAnchoringSmoother::AdjustStartEndHeading(
     const Eigen::MatrixXd& xWS,
     std::vector<std::pair<double, double>>* const point2d) {
-  // Sanity check
-  CHECK_NOTNULL(point2d);
-  CHECK_GT(xWS.cols(), 1);
-  CHECK_GT(point2d->size(), 3U);
+  // // Sanity check
+  // CHECK_NOTNULL(point2d);
+  // CHECK_GT(xWS.cols(), 1);
+  // CHECK_GT(point2d->size(), 3U);
 
-  // Set initial heading and bounds
+  // 获取起止偏航
   const double initial_heading = xWS(2, 0);
   const double end_heading = xWS(2, xWS.cols() - 1);
 
   // Adjust the point position to have heading by finite element difference of
   // the point and the other point equal to the given warm start initial or end
   // heading
+
+  // 调整插值后的第二个点与初始偏航一致
   const double first_to_second_dx = point2d->at(1).first - point2d->at(0).first;
   const double first_to_second_dy =
       point2d->at(1).second - point2d->at(0).second;
@@ -260,6 +276,7 @@ void IterativeAnchoringSmoother::AdjustStartEndHeading(
   initial_vec += first_point;
   point2d->at(1) = std::make_pair(initial_vec.x(), initial_vec.y());
 
+  // 调整插值后的导数第二个点与末端偏航一致
   const size_t path_size = point2d->size();
   const double second_last_to_last_dx =
       point2d->at(path_size - 1).first - point2d->at(path_size - 2).first;
@@ -279,16 +296,18 @@ void IterativeAnchoringSmoother::AdjustStartEndHeading(
 bool IterativeAnchoringSmoother::ReAnchoring(
     const std::vector<size_t>& colliding_point_index,
     DiscretizedPath* path_points) {
+
+  // 如果无碰撞，则直接返回
   CHECK_NOTNULL(path_points);
   if (colliding_point_index.empty()) {
     ADEBUG << "no point needs to be re-anchored";
     return true;
   }
 
+  // 校验colliding_point_index合法性
   CHECK_GT(path_points->size(),
            *(std::max_element(colliding_point_index.begin(),
                               colliding_point_index.end())));
-
   for (const auto index : colliding_point_index) {
     if (index == 0 || index == path_points->size() - 1) {
       AERROR << "Initial and end points collision avoid condition failed.";
@@ -301,6 +320,7 @@ bool IterativeAnchoringSmoother::ReAnchoring(
     }
   }
 
+  // 提取配置参数
   // TODO(Jinyun): move to confs
   const size_t reanchoring_trails_num = static_cast<size_t>(
       planner_open_space_config_.iterative_anchoring_smoother_config()
@@ -311,17 +331,26 @@ bool IterativeAnchoringSmoother::ReAnchoring(
   const double reanchoring_length_stddev =
       planner_open_space_config_.iterative_anchoring_smoother_config()
           .reanchoring_length_stddev();
+
+  // 初始化随机生成器
   std::random_device rd;
   std::default_random_engine gen = std::default_random_engine(rd());
   std::normal_distribution<> pos_dis{0, reanchoring_pos_stddev};
   std::normal_distribution<> length_dis{0, reanchoring_length_stddev};
 
+  // 遍历每一个碰撞点
   for (const auto index : colliding_point_index) {
+
+    // 尝试reanchor
     bool reanchoring_success = false;
     for (size_t i = 0; i < reanchoring_trails_num; ++i) {
       // Get ego box for collision check on collision point index
       bool is_colliding = false;
+
+      // 遍历前后共三个点
       for (size_t j = index - 1; j < index + 2; ++j) {
+
+        // 提取当前点的包围盒
         const double heading =
             gear_ ? path_points->at(j).theta()
                   : NormalizeAngle(path_points->at(j).theta() + M_PI);
@@ -330,6 +359,8 @@ bool IterativeAnchoringSmoother::ReAnchoring(
                        path_points->at(j).y() +
                            center_shift_distance_ * std::sin(heading)},
                       heading, ego_length_, ego_width_);
+
+        // 判断包围盒是否碰撞
         for (const auto& obstacle_linesegments : obstacles_linesegments_vec_) {
           for (const LineSegment2d& linesegment : obstacle_linesegments) {
             if (ego_box.HasOverlap(linesegment)) {
@@ -346,8 +377,13 @@ bool IterativeAnchoringSmoother::ReAnchoring(
         }
       }
 
+      // 如果发生碰撞，则执行reanchor
       if (is_colliding) {
         // Adjust the point by randomly move around the original points
+
+        // 起点附近的碰撞点（index=1）：
+        // 以起点为基准，沿起点方向进行随机缩放。例如，若原路径从起点到 index=1 的距离为 Δs，
+        // 则新距离为 Δs×(1±rand_dev)，其中 rand_dev∈[-0.8,0.8]。
         if (index == 1) {
           const double adjust_theta = path_points->at(index - 1).theta();
           const double delta_s = std::abs(path_points->at(index).s() -
@@ -360,7 +396,12 @@ bool IterativeAnchoringSmoother::ReAnchoring(
           path_points->at(index).set_y(path_points->at(index - 1).y() +
                                        adjusted_delta_s *
                                            std::sin(adjust_theta));
-        } else if (index == path_points->size() - 2) {
+        } 
+        
+        // 终点附近的碰撞点（index=size-2）：
+        // 以终点为基准，沿终点的反方向进行随机缩放。例如，若原路径从 index=size-2 到终点的距离为 Δs，
+        // 则新距离为 Δs×(1±rand_dev)。
+        else if (index == path_points->size() - 2) {
           const double adjust_theta =
               NormalizeAngle(path_points->at(index + 1).theta() + M_PI);
           const double delta_s = std::abs(path_points->at(index + 1).s() -
@@ -373,7 +414,11 @@ bool IterativeAnchoringSmoother::ReAnchoring(
           path_points->at(index).set_y(path_points->at(index + 1).y() +
                                        adjusted_delta_s *
                                            std::sin(adjust_theta));
-        } else {
+        } 
+        
+        // 中间点的碰撞点：
+        // 直接在 x 和 y 方向上添加随机偏移，偏移量受reanchoring_pos_stddev控制（例如，±2 倍标准差）。
+        else {
           double rand_dev_x =
               common::math::Clamp(pos_dis(gen), 2.0 * reanchoring_pos_stddev,
                                   -2.0 * reanchoring_pos_stddev);
@@ -396,6 +441,7 @@ bool IterativeAnchoringSmoother::ReAnchoring(
       }
     }
 
+    // reanchor失败，返回false
     if (!reanchoring_success) {
       AERROR << "interpolated points at index " << index
              << "can't be successfully reanchored";
@@ -421,22 +467,27 @@ bool IterativeAnchoringSmoother::GenerateInitialBounds(
           .vehicle_shortest_dimension();
   const double kEpislon = 1e-8;
 
+  // 如果不估计边界，则直接填写默认边界
   if (!estimate_bound) {
     std::vector<double> default_bounds(path_points.size(), default_bound);
     *initial_bounds = std::move(default_bounds);
     return true;
   }
 
-  // TODO(Jinyun): refine obstacle formulation and speed it up
+  // 遍历每一个路径点
   for (const auto& path_point : path_points) {
     double min_bound = std::numeric_limits<double>::infinity();
+    // 遍历所有障碍物
     for (const auto& obstacle_linesegments : obstacles_linesegments_vec_) {
+      // 遍历障碍物的每一条线
       for (const LineSegment2d& linesegment : obstacle_linesegments) {
+        // 计算路径点到障碍物线的最短距离
         min_bound =
             std::min(min_bound,
                      linesegment.DistanceTo({path_point.x(), path_point.y()}));
       }
     }
+    // 修正边界
     min_bound -= vehicle_shortest_dimension;
     min_bound = min_bound < kEpislon ? 0.0 : min_bound;
     initial_bounds->push_back(min_bound);
@@ -444,11 +495,14 @@ bool IterativeAnchoringSmoother::GenerateInitialBounds(
   return true;
 }
 
+// point_box未使用
 bool IterativeAnchoringSmoother::SmoothPath(
     const DiscretizedPath& raw_path_points,
     const std::vector<double>& bounds,
     DiscretizedPath* smoothed_path_points,
     std::vector<std::vector<common::math::Vec2d>> point_box) {
+  
+  // 拷贝path和bounds
   std::vector<std::pair<double, double>> raw_point2d;
   std::vector<double> flexible_bounds;
   for (const auto& path_point : raw_path_points) {
@@ -456,6 +510,7 @@ bool IterativeAnchoringSmoother::SmoothPath(
   }
   flexible_bounds = bounds;
 
+  // 初始化优化器
   FemPosDeviationSmoother fem_pos_smoother(
       planner_open_space_config_.iterative_anchoring_smoother_config()
           .fem_pos_deviation_smoother_config());
@@ -469,13 +524,17 @@ bool IterativeAnchoringSmoother::SmoothPath(
   size_t counter = 0;
 
   while (!is_collision_free) {
+
+    // 如果超出迭代次数，提前结束迭代
     if (counter > max_iteration_num) {
       AERROR << "Maximum iteration reached, path smoother early stops";
       return true;
     }
 
+    // 锁定起止某几个航点，缩小碰撞路径的优化半径
     AdjustPathBounds(colliding_point_index, &flexible_bounds);
 
+    // 对路径点进行优化
     std::vector<double> opt_x;
     std::vector<double> opt_y;
     if (!fem_pos_smoother.Solve(raw_point2d, flexible_bounds, &opt_x, &opt_y)) {
@@ -483,24 +542,27 @@ bool IterativeAnchoringSmoother::SmoothPath(
       return false;
     }
 
+    // 如果优化结果不合理，直接返回失败
     if (opt_x.size() < 2 || opt_y.size() < 2) {
       AERROR << "Return by fem_pos_smoother is wrong. Size smaller than 2 ";
       return false;
     }
-
     CHECK_EQ(opt_x.size(), opt_y.size());
 
+    // 加载优化结果
     size_t point_size = opt_x.size();
     smoothed_point2d.clear();
     for (size_t i = 0; i < point_size; ++i) {
       smoothed_point2d.emplace_back(opt_x[i], opt_y[i]);
     }
 
+    // 重新计算headings/s/kappa/kappaD
     if (!SetPathProfile(smoothed_point2d, smoothed_path_points)) {
       AERROR << "Set path profile fails";
       return false;
     }
 
+    // 更新碰撞路径点索引，判断是否产生新的碰撞
     is_collision_free =
         CheckCollisionAvoidance(*smoothed_path_points, &colliding_point_index);
 
@@ -515,9 +577,12 @@ bool IterativeAnchoringSmoother::CheckCollisionAvoidance(
     std::vector<size_t>* colliding_point_index) {
   CHECK_NOTNULL(colliding_point_index);
 
+  // 遍历所有路径点
   colliding_point_index->clear();
   size_t path_points_size = path_points.size();
   for (size_t i = 0; i < path_points_size; ++i) {
+
+    // 如果上一次缓存中已经确定了该路径点发生碰撞，则不再进行校验
     // Skip checking collision for thoese points colliding originally
     bool skip_checking = false;
     for (const auto index : input_colliding_point_index_) {
@@ -530,6 +595,7 @@ bool IterativeAnchoringSmoother::CheckCollisionAvoidance(
       continue;
     }
 
+    // 计算自车包围盒
     const double heading = gear_
                                ? path_points[i].theta()
                                : NormalizeAngle(path_points[i].theta() + M_PI);
@@ -538,9 +604,11 @@ bool IterativeAnchoringSmoother::CheckCollisionAvoidance(
          path_points[i].y() + center_shift_distance_ * std::sin(heading)},
         heading, ego_length_, ego_width_);
 
+    // 遍历所有障碍物
     bool is_colliding = false;
     for (const auto& obstacle_linesegments : obstacles_linesegments_vec_) {
       for (const LineSegment2d& linesegment : obstacle_linesegments) {
+        // 如果存在碰撞，记录碰撞点索引值
         if (ego_box.HasOverlap(linesegment)) {
           colliding_point_index->push_back(i);
           ADEBUG << "point at " << i << "collied with LineSegment "
@@ -570,16 +638,18 @@ void IterativeAnchoringSmoother::AdjustPathBounds(
       planner_open_space_config_.iterative_anchoring_smoother_config()
           .collision_decrease_ratio();
 
+  // 对碰撞点的边界进行收缩
   for (const auto index : colliding_point_index) {
     bounds->at(index) *= collision_decrease_ratio;
   }
 
-  // Anchor the end points to enforce the initial end end heading continuity and
-  // zero kappa
+  // 起止路径点和起止第二个路径点锁位置
   bounds->at(0) = 0.0;
   bounds->at(1) = 0.0;
   bounds->at(bounds->size() - 1) = 0.0;
   bounds->at(bounds->size() - 2) = 0.0;
+
+  // 如果锁曲率，则第三个点也锁位置
   if (enforce_initial_kappa_) {
     bounds->at(2) = 0.0;
   }
@@ -591,6 +661,7 @@ bool IterativeAnchoringSmoother::SetPathProfile(
   CHECK_NOTNULL(raw_path_points);
   raw_path_points->clear();
   // Compute path profile
+  // 重新计算headings/s/kappa/kappaD
   std::vector<double> headings;
   std::vector<double> kappas;
   std::vector<double> dkappas;
@@ -604,7 +675,7 @@ bool IterativeAnchoringSmoother::SetPathProfile(
   CHECK_EQ(point2d.size(), dkappas.size());
   CHECK_EQ(point2d.size(), accumulated_s.size());
 
-  // Load into path point
+  // 将数据加载到raw_path_points
   size_t points_size = point2d.size();
   for (size_t i = 0; i < points_size; ++i) {
     PathPoint path_point;
@@ -633,6 +704,7 @@ bool IterativeAnchoringSmoother::SmoothSpeed(const double init_a,
                                              const double init_v,
                                              const double path_length,
                                              SpeedData* smoothed_speeds) {
+  // 加载参数
   const double max_forward_v =
       planner_open_space_config_.iterative_anchoring_smoother_config()
           .max_forward_v();
@@ -777,6 +849,7 @@ void IterativeAnchoringSmoother::AdjustPathAndSpeedByGear(
   if (gear_) {
     return;
   }
+  // 如果是后退档，则调整theta/s/kappa/v/a
   std::for_each(
       discretized_trajectory->begin(), discretized_trajectory->end(),
       [](TrajectoryPoint& trajectory_point) {

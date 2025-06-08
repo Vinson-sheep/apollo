@@ -190,7 +190,9 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
       // TODO(Jinyun): Further testing
       const auto smoother_start_timestamp = std::chrono::system_clock::now();
       if (FLAGS_use_iterative_anchoring_smoother) {
-        AINFO << "use iterative anchoring smoother";
+        // AINFO << "use iterative anchoring smoother";
+
+        // DL-IAPS and PJSO
         if (!GenerateDecoupledTraj(
                 xWS_vec[i], last_time_u(1, 0), init_v, obstacles_vertices_vec,
                 &state_result_ds_vec[i], &control_result_ds_vec[i],
@@ -202,11 +204,14 @@ Status OpenSpaceTrajectoryOptimizer::Plan(
               "iterative anchoring smoothing problem failed to solve");
         }
       } else {
+        
         // const double start_system_timestamp =
         //     std::chrono::duration<double>(
         //         std::chrono::system_clock::now().time_since_epoch())
         //         .count();
         // AINFO << "use distance approach parallel smoother";
+
+        // TDR-OBCA
         if (!GenerateDistanceApproachTraj(
                 xWS_vec[i], uWS_vec[i], XYbounds, obstacles_edges_num,
                 obstacles_A, obstacles_b, obstacles_vertices_vec, last_time_u,
@@ -554,6 +559,14 @@ void OpenSpaceTrajectoryOptimizer::UseWarmStartAsResult(
       1, time_result_horizon, config_.planner_open_space_config().delta_t());
 }
 
+// Optimization-Based Collision Avoidance (OBCA)
+// xWS 状态 x + y + phi + v
+// uWs 控制量 steer + a
+// XYbounds 合法边界
+// obstacles_edges_num 存储障碍物顶点坐标
+// obstacles_A/obstacles_b 障碍物的线性约束
+// last_time_u 轨迹初始控制量 steer + a
+// init_v 初始速度
 bool OpenSpaceTrajectoryOptimizer::GenerateDistanceApproachTraj(
     const Eigen::MatrixXd& xWS, const Eigen::MatrixXd& uWS,
     const std::vector<double>& XYbounds,
@@ -565,14 +578,17 @@ bool OpenSpaceTrajectoryOptimizer::GenerateDistanceApproachTraj(
     Eigen::MatrixXd* time_result_ds, Eigen::MatrixXd* l_warm_up,
     Eigen::MatrixXd* n_warm_up, Eigen::MatrixXd* dual_l_result_ds,
     Eigen::MatrixXd* dual_n_result_ds) {
+
+  // 计算初始状态
   size_t horizon = xWS.cols() - 1;
   Eigen::MatrixXd x0(4, 1);
   x0 << xWS(0, 0), xWS(1, 0), xWS(2, 0), init_v;
 
+  // 计算末端状态
   Eigen::MatrixXd xF(4, 1);
   xF << xWS(0, horizon), xWS(1, horizon), xWS(2, horizon), xWS(3, horizon);
 
-  // load vehicle configuration
+  // 加载车辆参数
   const common::VehicleParam& vehicle_param_ =
       common::VehicleConfigHelper::GetConfig().vehicle_param();
   double front_to_center = vehicle_param_.front_edge_to_center();
@@ -582,16 +598,18 @@ bool OpenSpaceTrajectoryOptimizer::GenerateDistanceApproachTraj(
   Eigen::MatrixXd ego(4, 1);
   ego << front_to_center, right_to_center, back_to_center, left_to_center;
 
-  // Get obstacle num
+  // 计算障碍物数目
   size_t obstacles_num = obstacles_vertices_vec.size();
 
-  // Get timestep delta t
+  // 计算时间间隔
   double ts = config_.planner_open_space_config().delta_t();
 
   // slack_warm_up, temp usage
   Eigen::MatrixXd s_warm_up = Eigen::MatrixXd::Zero(obstacles_num, horizon + 1);
 
   // Dual variable warm start for distance approach problem
+
+  // 使用热启动
   if (FLAGS_use_dual_variable_warm_start) {
     if (dual_variable_warm_start_->Solve(
             horizon, ts, ego, obstacles_num, obstacles_edges_num, obstacles_A,
@@ -601,7 +619,9 @@ bool OpenSpaceTrajectoryOptimizer::GenerateDistanceApproachTraj(
       AERROR << "Dual variable problem failed to solve";
       return false;
     }
-  } else {
+  } 
+  // 不使用热启动
+  else {
     *l_warm_up =
         0.5 * Eigen::MatrixXd::Ones(obstacles_edges_num.sum(), horizon + 1);
     *n_warm_up = 0.5 * Eigen::MatrixXd::Ones(4 * obstacles_num, horizon + 1);
@@ -857,6 +877,7 @@ void OpenSpaceTrajectoryOptimizer::CombineTrajectories(
   *dual_n_result_ds = std::move(dual_n_result_ds_);
 }
 
+// DL-IAPS and PJSO
 bool OpenSpaceTrajectoryOptimizer::GenerateDecoupledTraj(
     const Eigen::MatrixXd& xWS, const double init_a, const double init_v,
     const std::vector<std::vector<Vec2d>>& obstacles_vertices_vec,
