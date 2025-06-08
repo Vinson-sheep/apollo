@@ -115,6 +115,7 @@ bool PiecewiseJerkProblem::Optimize(const int max_iter) {
     return false;
   }
 
+  // x dx ddx 分三段存放
   // extract primal results
   x_.resize(num_of_knots_);
   dx_.resize(num_of_knots_);

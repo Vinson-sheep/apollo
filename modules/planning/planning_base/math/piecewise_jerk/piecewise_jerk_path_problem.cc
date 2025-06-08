@@ -36,6 +36,7 @@ void PiecewiseJerkPathProblem::CalculateKernel(std::vector<c_float>* P_data,
   std::vector<std::vector<std::pair<c_int, c_float>>> columns(num_of_variables);
   int value_index = 0;
 
+  // 关于pos的约束，增大w_x可以让pos往0方向靠近，增大w_x_ref可以让pos往ref_pos靠近
   // x(i)^2 * (w_x + w_x_ref[i]), w_x_ref might be a uniform value for all x(i)
   // or piecewise values for different x(i)
   for (int i = 0; i < n - 1; ++i) {
@@ -43,24 +44,30 @@ void PiecewiseJerkPathProblem::CalculateKernel(std::vector<c_float>* P_data,
                                    (scale_factor_[0] * scale_factor_[0]));
     ++value_index;
   }
+
+  // 末端pos增加额外约束
   // x(n-1)^2 * (w_x + w_x_ref[n-1] + w_end_x)
   columns[n - 1].emplace_back(
       n - 1, (weight_x_ + weight_x_ref_vec_[n - 1] + weight_end_state_[0]) /
                  (scale_factor_[0] * scale_factor_[0]));
   ++value_index;
 
+  // 关于vel的约束，增大w_dx可以让vel往0方向靠近
   // x(i)'^2 * w_dx
   for (int i = 0; i < n - 1; ++i) {
     columns[n + i].emplace_back(
         n + i, weight_dx_ / (scale_factor_[1] * scale_factor_[1]));
     ++value_index;
   }
+
+  // 末端vel增加额外约束
   // x(n-1)'^2 * (w_dx + w_end_dx)
   columns[2 * n - 1].emplace_back(2 * n - 1,
                                   (weight_dx_ + weight_end_state_[1]) /
                                       (scale_factor_[1] * scale_factor_[1]));
   ++value_index;
 
+  // 关于acc和jerk的约束，增大w_ddx和w_dddx可以限制acc和jerk
   auto delta_s_square = delta_s_ * delta_s_;
   // x(i)''^2 * (w_ddx + 2 * w_dddx / delta_s^2)
   columns[2 * n].emplace_back(2 * n,
@@ -73,6 +80,8 @@ void PiecewiseJerkPathProblem::CalculateKernel(std::vector<c_float>* P_data,
                        (scale_factor_[2] * scale_factor_[2]));
     ++value_index;
   }
+
+  // 末端acc增加额外约束
   columns[3 * n - 1].emplace_back(
       3 * n - 1,
       (weight_ddx_ + weight_dddx_ / delta_s_square + weight_end_state_[2]) /
@@ -89,6 +98,7 @@ void PiecewiseJerkPathProblem::CalculateKernel(std::vector<c_float>* P_data,
 
   CHECK_EQ(value_index, num_of_nonzeros);
 
+  // 转换为csc_matrix格式
   int ind_p = 0;
   for (int i = 0; i < num_of_variables; ++i) {
     P_indptr->push_back(ind_p);
@@ -124,7 +134,8 @@ void PiecewiseJerkPathProblem::CalculateAffineConstraint(
       num_of_variables);
 
   int constraint_index = 0;
-  // set x, x', x'' bounds
+
+  // x, x', x''边界约束，一共3N个
   for (int i = 0; i < num_of_variables; ++i) {
     if (i < n) {
       variables[i].emplace_back(constraint_index, 1.0);
@@ -148,41 +159,47 @@ void PiecewiseJerkPathProblem::CalculateAffineConstraint(
     }
     ++constraint_index;
   }
-  CHECK_EQ(constraint_index, num_of_variables);
-  for (int i = 0; i < num_of_extra_constraints; ++i) {
-    auto& left_index = extra_constraints_[i].left_index;
-    auto& right_index = extra_constraints_[i].right_index;
-    auto& left_weight = extra_constraints_[i].left_weight;
-    auto& right_weight = extra_constraints_[i].right_weight;
+  // CHECK_EQ(constraint_index, num_of_variables);
 
-    variables[left_index].emplace_back(constraint_index,
-                                       left_weight / scale_factor_[0]);
-    variables[right_index].emplace_back(constraint_index,
-                                        right_weight / scale_factor_[0]);
-    lower_bounds->at(constraint_index) = extra_constraints_[i].lower_bound;
-    upper_bounds->at(constraint_index) = extra_constraints_[i].upper_bound;
-    ++constraint_index;
-  }
-  for (int i = 0; i < num_of_vertex_constraints; ++i) {
-    auto& left_index = vertex_constraints_[i].left_index;
-    auto& right_index = vertex_constraints_[i].right_index;
-    auto& left_weight = vertex_constraints_[i].left_weight;
-    auto& right_weight = vertex_constraints_[i].right_weight;
+  // // 与障碍物相关的约束
+  // for (int i = 0; i < num_of_extra_constraints; ++i) {
+  //   auto& left_index = extra_constraints_[i].left_index;
+  //   auto& right_index = extra_constraints_[i].right_index;
+  //   auto& left_weight = extra_constraints_[i].left_weight;
+  //   auto& right_weight = extra_constraints_[i].right_weight;
 
-    variables[left_index].emplace_back(constraint_index,
-                                       left_weight / scale_factor_[0]);
-    variables[right_index].emplace_back(constraint_index,
-                                        right_weight / scale_factor_[0]);
-    variables[n + left_index].emplace_back(
-        constraint_index, vertex_constraints_.front_edge_to_center *
-                              left_weight / scale_factor_[1]);
-    variables[n + right_index].emplace_back(
-        constraint_index, vertex_constraints_.front_edge_to_center *
-                              right_weight / scale_factor_[1]);
-    lower_bounds->at(constraint_index) = vertex_constraints_[i].lower_bound;
-    upper_bounds->at(constraint_index) = vertex_constraints_[i].upper_bound;
-    ++constraint_index;
-  }
+  //   variables[left_index].emplace_back(constraint_index,
+  //                                      left_weight / scale_factor_[0]);
+  //   variables[right_index].emplace_back(constraint_index,
+  //                                       right_weight / scale_factor_[0]);
+  //   lower_bounds->at(constraint_index) = extra_constraints_[i].lower_bound;
+  //   upper_bounds->at(constraint_index) = extra_constraints_[i].upper_bound;
+  //   ++constraint_index;
+  // }
+
+  // // 与区间相关的约束
+  // for (int i = 0; i < num_of_vertex_constraints; ++i) {
+  //   auto& left_index = vertex_constraints_[i].left_index;
+  //   auto& right_index = vertex_constraints_[i].right_index;
+  //   auto& left_weight = vertex_constraints_[i].left_weight;
+  //   auto& right_weight = vertex_constraints_[i].right_weight;
+
+  //   variables[left_index].emplace_back(constraint_index,
+  //                                      left_weight / scale_factor_[0]);
+  //   variables[right_index].emplace_back(constraint_index,
+  //                                       right_weight / scale_factor_[0]);
+  //   variables[n + left_index].emplace_back(
+  //       constraint_index, vertex_constraints_.front_edge_to_center *
+  //                             left_weight / scale_factor_[1]);
+  //   variables[n + right_index].emplace_back(
+  //       constraint_index, vertex_constraints_.front_edge_to_center *
+  //                             right_weight / scale_factor_[1]);
+  //   lower_bounds->at(constraint_index) = vertex_constraints_[i].lower_bound;
+  //   upper_bounds->at(constraint_index) = vertex_constraints_[i].upper_bound;
+  //   ++constraint_index;
+  // }
+
+  // x'''边界约束，一共N-1个
   // x(i->i+1)''' = (x(i+1)'' - x(i)'') / delta_s
   for (int i = 0; i + 1 < n; ++i) {
     variables[2 * n + i].emplace_back(constraint_index, -1.0);
@@ -193,6 +210,8 @@ void PiecewiseJerkPathProblem::CalculateAffineConstraint(
         dddx_bound_.second * delta_s_ * scale_factor_[2];
     ++constraint_index;
   }
+
+  // piecewise_jerk 基本等式约束1，一共N-1个
   // x(i+1)' - x(i)' - 0.5 * delta_s * x(i)'' - 0.5 * delta_s * x(i+1)'' = 0
   for (int i = 0; i + 1 < n; ++i) {
     variables[n + i].emplace_back(constraint_index, -1.0 * scale_factor_[2]);
@@ -205,6 +224,8 @@ void PiecewiseJerkPathProblem::CalculateAffineConstraint(
     upper_bounds->at(constraint_index) = 0.0;
     ++constraint_index;
   }
+  
+  // piecewise_jerk 基本等式约束2，一共N-1个
   // x(i+1) - x(i) - delta_s * x(i)'
   // - 1/3 * delta_s^2 * x(i)'' - 1/6 * delta_s^2 * x(i+1)''
   auto delta_s_sq_ = delta_s_ * delta_s_;
@@ -226,7 +247,8 @@ void PiecewiseJerkPathProblem::CalculateAffineConstraint(
     upper_bounds->at(constraint_index) = 0.0;
     ++constraint_index;
   }
-  // constrain on x_init
+
+  // 初始状态不进行优化，一共3个约束
   variables[0].emplace_back(constraint_index, 1.0);
   lower_bounds->at(constraint_index) = x_init_[0] * scale_factor_[0];
   upper_bounds->at(constraint_index) = x_init_[0] * scale_factor_[0];
@@ -242,6 +264,7 @@ void PiecewiseJerkPathProblem::CalculateAffineConstraint(
   upper_bounds->at(constraint_index) = x_init_[2] * scale_factor_[2];
   ++constraint_index;
 
+  // 转换为osqp形式
   CHECK_EQ(constraint_index, num_of_constraints);
   int ind_p = 0;
   for (int i = 0; i < num_of_variables; ++i) {
@@ -266,12 +289,15 @@ void PiecewiseJerkPathProblem::CalculateOffset(std::vector<c_float>* q) {
   const int kNumParam = 3 * n;
   q->resize(kNumParam, 0.0);
 
+  // 是否有路径点参考值
+  // 但kernel并没有去做判断，这样是否会有问题？
   if (has_x_ref_) {
     for (int i = 0; i < n; ++i) {
       q->at(i) += -2.0 * weight_x_ref_vec_.at(i) * x_ref_[i] / scale_factor_[0];
     }
   }
 
+  // 是否有末端状态参考值
   if (has_end_state_ref_) {
     q->at(n - 1) +=
         -2.0 * weight_end_state_[0] * end_state_ref_[0] / scale_factor_[0];
@@ -281,12 +307,13 @@ void PiecewiseJerkPathProblem::CalculateOffset(std::vector<c_float>* q) {
         -2.0 * weight_end_state_[2] * end_state_ref_[2] / scale_factor_[2];
   }
 
-  if (has_towing_x_ref_) {
-    for (int i = 0; i < n; ++i) {
-      q->at(i) += -2.0 * weight_towing_x_ref_vec_.at(i) * towing_x_ref_[i] /
-                  scale_factor_[0];
-    }
-  }
+  // // 拖挂系统参考路径
+  // if (has_towing_x_ref_) {
+  //   for (int i = 0; i < n; ++i) {
+  //     q->at(i) += -2.0 * weight_towing_x_ref_vec_.at(i) * towing_x_ref_[i] /
+  //                 scale_factor_[0];
+  //   }
+  // }
 }
 
 }  // namespace planning
