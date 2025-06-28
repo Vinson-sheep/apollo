@@ -350,31 +350,31 @@ void FemPosDeviationSqpOsqpInterface::CalculateOffset(
   for (int i = 0; i < num_of_slack_variables_; ++i) {
     (*q)[num_of_pos_variables_ + i] = weight_curvature_constraint_slack_var_;
   }
-  AINFO << "FLAGS_enable_obstacle_potential_field: "
-        << FLAGS_enable_obstacle_potential_field
-        << " num_of_points_: " << num_of_points_
-        << "point_box_: " << point_box_.size();
+  // AINFO << "FLAGS_enable_obstacle_potential_field: "
+  //       << FLAGS_enable_obstacle_potential_field
+  //       << " num_of_points_: " << num_of_points_
+  //       << "point_box_: " << point_box_.size();
   // 考虑障碍物 （忽略）
-  if (FLAGS_enable_obstacle_potential_field &&
-      point_box_.size() == num_of_points_ - 1) {
-    AINFO << "use obstacle potential field";
-    for (int i = 1; i < num_of_points_ - 1; ++i) {
-      double grad_x = 0;
-      double grad_y = 0;
-      point_box_[i].push_back(point_box_[i].front());
-      for (int j = 0; j < 4; j++) {
-        Vec2d edge_vec(point_box_[i][j + 1].x() - point_box_[i][j].x(),
-                       point_box_[i][j + 1].y() - point_box_[i][j].y());
-        Vec2d ego_vec(points[i].first - point_box_[i][j].x(),
-                      points[i].second - point_box_[i][j].y());
-        grad_x += edge_vec.y() / edge_vec.CrossProd(ego_vec);
-        grad_y += -edge_vec.x() / edge_vec.CrossProd(ego_vec);
-      }
+  // if (FLAGS_enable_obstacle_potential_field &&
+  //     point_box_.size() == num_of_points_ - 1) {
+  //   AINFO << "use obstacle potential field";
+  //   for (int i = 1; i < num_of_points_ - 1; ++i) {
+  //     double grad_x = 0;
+  //     double grad_y = 0;
+  //     point_box_[i].push_back(point_box_[i].front());
+  //     for (int j = 0; j < 4; j++) {
+  //       Vec2d edge_vec(point_box_[i][j + 1].x() - point_box_[i][j].x(),
+  //                      point_box_[i][j + 1].y() - point_box_[i][j].y());
+  //       Vec2d ego_vec(points[i].first - point_box_[i][j].x(),
+  //                     points[i].second - point_box_[i][j].y());
+  //       grad_x += edge_vec.y() / edge_vec.CrossProd(ego_vec);
+  //       grad_y += -edge_vec.x() / edge_vec.CrossProd(ego_vec);
+  //     }
 
-      (*q)[2 * i] += FLAGS_sqp_obstacle_weight * grad_x;
-      (*q)[2 * i + 1] += FLAGS_sqp_obstacle_weight * grad_y;
-    }
-  }
+  //     (*q)[2 * i] += FLAGS_sqp_obstacle_weight * grad_x;
+  //     (*q)[2 * i + 1] += FLAGS_sqp_obstacle_weight * grad_y;
+  //   }
+  // }
 }
 
 std::vector<double>
@@ -423,14 +423,17 @@ void FemPosDeviationSqpOsqpInterface::CalculateAffineConstraint(
   std::vector<std::vector<std::pair<c_int, c_float>>> columns;
   columns.resize(num_of_variables_);
 
+  // 位点的上下界 && 松弛因子上下界
   for (int i = 0; i < num_of_variables_; ++i) {
     columns[i].emplace_back(i, 1.0);
   }
 
+  // 线性曲率约束-松弛因子
   for (int i = num_of_pos_variables_; i < num_of_variables_; ++i) {
     columns[i].emplace_back(i + num_of_slack_variables_, -1.0 * scale_factor);
   }
 
+  // x_{i+1} y_{i+1}
   for (int i = 2; i < num_of_points_; ++i) {
     int index = 2 * i;
     columns[index].emplace_back(i - 2 + num_of_variables_,

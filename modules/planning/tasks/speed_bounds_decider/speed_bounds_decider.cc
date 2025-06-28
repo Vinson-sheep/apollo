@@ -51,7 +51,7 @@ bool SpeedBoundsDecider::Init(
 }
 
 
-// 为障碍物生成st图，依据场景生成速度限制，最终生成全局st图
+// 为st图准备数据(障碍物st边界，速度限制)
 Status SpeedBoundsDecider::Process(
     Frame *const frame, ReferenceLineInfo *const reference_line_info) {
   // retrieve data from frame and reference_line_info
@@ -62,12 +62,12 @@ Status SpeedBoundsDecider::Process(
   
   PathDecision *const path_decision = reference_line_info->path_decision();
 
-  // 1. Map obstacles into st graph
-  auto time1 = std::chrono::system_clock::now();
+  // 1. 将障碍物转换为st边界
   STBoundaryMapper boundary_mapper(config_, reference_line, path_data,
                                    path_data.discretized_path().Length(),
                                    config_.total_time(), injector_);
 
+  // 如果不做投影，则直接清除所有数据
   if (!FLAGS_use_st_drivable_boundary) {
     path_decision->EraseStBoundaries();
   }
@@ -79,11 +79,6 @@ Status SpeedBoundsDecider::Process(
     AERROR << msg;
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
-  auto time2 = std::chrono::system_clock::now();
-  std::chrono::duration<double> diff = time2 - time1;
-  ADEBUG << "Time for ST Boundary Mapping = " << diff.count() * 1000
-         << " msec.";
-
 
   // 遍历所有的障碍物，提取所有障碍物st图到boundaries
   std::vector<const STBoundary *> boundaries;
@@ -91,50 +86,47 @@ Status SpeedBoundsDecider::Process(
     // 获取id和st边界
     const auto &id = obstacle->Id();
     const auto &st_boundary = obstacle->path_st_boundary();
+    // 如果st边界存在，那么插入到boundaries
     if (!st_boundary.IsEmpty()) {
+      // 判断障碍物是阻挡型还是非阻挡型
       if (st_boundary.boundary_type() == STBoundary::BoundaryType::KEEP_CLEAR) {
         path_decision->Find(id)->SetBlockingObstacle(false);
       } else {
         path_decision->Find(id)->SetBlockingObstacle(true);
       }
       // 将st边界加入到全局边界
-      st_boundary.PrintDebug("_obs_st_bounds");
+      // st_boundary.PrintDebug("_obs_st_bounds");
       boundaries.push_back(&st_boundary);
     }
   }
 
-  // ？？
+  // 与障碍物最小距离s
   const double min_s_on_st_boundaries = SetSpeedFallbackDistance(path_decision);
 
-  // 2. Create speed limit along path
   // 生成速度限制
-  SpeedLimitDecider speed_limit_decider(config_, reference_line, path_data);
-
-  SpeedLimit speed_limit;
-
   // 根据道路限速，障碍物nudge限速，产生限速曲线
+  SpeedLimitDecider speed_limit_decider(config_, reference_line, path_data);
+  SpeedLimit speed_limit;
   if (!speed_limit_decider
            .GetSpeedLimits(path_decision->obstacles(), &speed_limit)
            .ok()) {
-    const std::string msg = "Getting speed limits failed!";
-    AERROR << msg;
+    // const std::string msg = "Getting speed limits failed!";
+    // AERROR << msg;
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
-  // 3. Get path_length as s axis search bound in st graph
+  // 最大s
   const double path_data_length = path_data.discretized_path().Length();
 
-  // 4. Get time duration as t axis search bound in st graph
+  // 最大t
   const double total_time_by_conf = config_.total_time();
 
-  // Load generated st graph data back to frame
-  StGraphData *st_graph_data = reference_line_info_->mutable_st_graph_data();
-
-  // Add a st_graph debug info and save the pointer to st_graph_data for
-  // optimizer logging
+  // debug指针
   auto *debug = reference_line_info_->mutable_debug();
   STGraphDebug *st_graph_debug = debug->mutable_planning_data()->add_st_graph();
 
+  // 加载st图准备数据
+  StGraphData *st_graph_data = reference_line_info_->mutable_st_graph_data();
   st_graph_data->LoadData(boundaries, min_s_on_st_boundaries, init_point,
                           speed_limit, reference_line_info->GetCruiseSpeed(),
                           path_data_length, total_time_by_conf, st_graph_debug);
@@ -145,21 +137,28 @@ Status SpeedBoundsDecider::Process(
   return Status::OK();
 }
 
-// ？？
+// 计算前进和后退的最小s
 double SpeedBoundsDecider::SetSpeedFallbackDistance(
     PathDecision *const path_decision) {
   // Set min_s_on_st_boundaries to guide speed fallback.
   static constexpr double kEpsilon = 1.0e-6;
+
+  // 非倒车情况下的最小s
   double min_s_non_reverse = std::numeric_limits<double>::infinity();
+
+  // 倒车情况下的最小s
   double min_s_reverse = std::numeric_limits<double>::infinity();
 
+  // 遍历所有障碍物
   for (auto *obstacle : path_decision->obstacles().Items()) {
     const auto &st_boundary = obstacle->path_st_boundary();
 
+    // 如果之前没有计算st边界，说明该障碍物不需要考虑，直接跳过
     if (st_boundary.IsEmpty()) {
       continue;
     }
 
+    // 获取障碍物的最小s
     const auto left_bottom_point_s = st_boundary.bottom_left_point().s();
     const auto right_bottom_point_s = st_boundary.bottom_right_point().s();
     const auto lowest_s = std::min(left_bottom_point_s, right_bottom_point_s);
@@ -179,53 +178,53 @@ double SpeedBoundsDecider::SetSpeedFallbackDistance(
   return min_s_non_reverse > min_s_reverse ? 0.0 : min_s_non_reverse;
 }
 
-void SpeedBoundsDecider::RecordSTGraphDebug(
-    const StGraphData &st_graph_data, STGraphDebug *st_graph_debug) const {
-  if (!FLAGS_enable_record_debug || !st_graph_debug) {
-    ADEBUG << "Skip record debug info";
-    return;
-  }
+// void SpeedBoundsDecider::RecordSTGraphDebug(
+//     const StGraphData &st_graph_data, STGraphDebug *st_graph_debug) const {
+//   if (!FLAGS_enable_record_debug || !st_graph_debug) {
+//     ADEBUG << "Skip record debug info";
+//     return;
+//   }
 
-  for (const auto &boundary : st_graph_data.st_boundaries()) {
-    auto boundary_debug = st_graph_debug->add_boundary();
-    boundary_debug->set_name(boundary->id());
-    switch (boundary->boundary_type()) {
-      case STBoundary::BoundaryType::FOLLOW:
-        boundary_debug->set_type(StGraphBoundaryDebug::ST_BOUNDARY_TYPE_FOLLOW);
-        break;
-      case STBoundary::BoundaryType::OVERTAKE:
-        boundary_debug->set_type(
-            StGraphBoundaryDebug::ST_BOUNDARY_TYPE_OVERTAKE);
-        break;
-      case STBoundary::BoundaryType::STOP:
-        boundary_debug->set_type(StGraphBoundaryDebug::ST_BOUNDARY_TYPE_STOP);
-        break;
-      case STBoundary::BoundaryType::UNKNOWN:
-        boundary_debug->set_type(
-            StGraphBoundaryDebug::ST_BOUNDARY_TYPE_UNKNOWN);
-        break;
-      case STBoundary::BoundaryType::YIELD:
-        boundary_debug->set_type(StGraphBoundaryDebug::ST_BOUNDARY_TYPE_YIELD);
-        break;
-      case STBoundary::BoundaryType::KEEP_CLEAR:
-        boundary_debug->set_type(
-            StGraphBoundaryDebug::ST_BOUNDARY_TYPE_KEEP_CLEAR);
-        break;
-    }
+//   for (const auto &boundary : st_graph_data.st_boundaries()) {
+//     auto boundary_debug = st_graph_debug->add_boundary();
+//     boundary_debug->set_name(boundary->id());
+//     switch (boundary->boundary_type()) {
+//       case STBoundary::BoundaryType::FOLLOW:
+//         boundary_debug->set_type(StGraphBoundaryDebug::ST_BOUNDARY_TYPE_FOLLOW);
+//         break;
+//       case STBoundary::BoundaryType::OVERTAKE:
+//         boundary_debug->set_type(
+//             StGraphBoundaryDebug::ST_BOUNDARY_TYPE_OVERTAKE);
+//         break;
+//       case STBoundary::BoundaryType::STOP:
+//         boundary_debug->set_type(StGraphBoundaryDebug::ST_BOUNDARY_TYPE_STOP);
+//         break;
+//       case STBoundary::BoundaryType::UNKNOWN:
+//         boundary_debug->set_type(
+//             StGraphBoundaryDebug::ST_BOUNDARY_TYPE_UNKNOWN);
+//         break;
+//       case STBoundary::BoundaryType::YIELD:
+//         boundary_debug->set_type(StGraphBoundaryDebug::ST_BOUNDARY_TYPE_YIELD);
+//         break;
+//       case STBoundary::BoundaryType::KEEP_CLEAR:
+//         boundary_debug->set_type(
+//             StGraphBoundaryDebug::ST_BOUNDARY_TYPE_KEEP_CLEAR);
+//         break;
+//     }
 
-    for (const auto &point : boundary->points()) {
-      auto point_debug = boundary_debug->add_point();
-      point_debug->set_t(point.x());
-      point_debug->set_s(point.y());
-    }
-  }
+//     for (const auto &point : boundary->points()) {
+//       auto point_debug = boundary_debug->add_point();
+//       point_debug->set_t(point.x());
+//       point_debug->set_s(point.y());
+//     }
+//   }
 
-  for (const auto &point : st_graph_data.speed_limit().speed_limit_points()) {
-    common::SpeedPoint *speed_point = st_graph_debug->add_speed_limit();
-    speed_point->set_s(point.first);
-    speed_point->set_v(point.second);
-  }
-}
+//   for (const auto &point : st_graph_data.speed_limit().speed_limit_points()) {
+//     common::SpeedPoint *speed_point = st_graph_debug->add_speed_limit();
+//     speed_point->set_s(point.first);
+//     speed_point->set_v(point.second);
+//   }
+// }
 
 }  // namespace planning
 }  // namespace apollo

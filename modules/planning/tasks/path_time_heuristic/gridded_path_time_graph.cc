@@ -99,17 +99,15 @@ Status GriddedPathTimeGraph::Search(SpeedData* const speed_data) {
 
   static constexpr double kBounadryEpsilon = 1e-2;
 
-  // 遍历所有st子图
+  // 遍历所有st子图，进行初始点安全校验
   for (const auto& boundary : st_graph_data_.st_boundaries()) {
 
-    // 忽略KEEP_CLEAR类型的边界
-    // KeepClear obstacles not considered in Dp St decision
+    // 仅考虑阻挡型障碍物
     if (boundary->boundary_type() == STBoundary::BoundaryType::KEEP_CLEAR) {
       continue;
     }
 
     // 如果st图原点在障碍物内，返回默认速度轮廓
-    // If init point in collision with obstacle, return speed fallback
     if (boundary->IsPointInBoundary({0.0, 0.0}) ||
         (std::fabs(boundary->min_t()) < kBounadryEpsilon &&
          std::fabs(boundary->min_s()) < kBounadryEpsilon)) {
@@ -160,14 +158,14 @@ Status GriddedPathTimeGraph::InitCostTable() {
   // Time dimension is homogeneous while Spatial dimension has two resolutions,
   // dense and sparse with dense resolution coming first in the spatial horizon
 
-  // Sanity check for numerical stability
+  // 如果dt不合法，则报错
   if (unit_t_ < kDoubleEpsilon) {
     const std::string msg = "unit_t is smaller than the kDoubleEpsilon.";
     AERROR << msg;
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
-  // Sanity check on s dimension setting
+  // 如果ds不合法，则报错
   if (dense_dimension_s_ < 1) {
     const std::string msg = "dense_dimension_s is at least 1.";
     AERROR << msg;
@@ -240,6 +238,7 @@ Status GriddedPathTimeGraph::InitCostTable() {
   return Status::OK();
 }
 
+// 加载速度约束
 Status GriddedPathTimeGraph::InitSpeedLimitLookUp() {
   speed_limit_by_index_.clear();
 
@@ -254,6 +253,7 @@ Status GriddedPathTimeGraph::InitSpeedLimitLookUp() {
   return Status::OK();
 }
 
+// 执行dp
 Status GriddedPathTimeGraph::CalculateTotalCost() {
   // col and row are for STGraph
   // t corresponding to col
@@ -273,27 +273,27 @@ Status GriddedPathTimeGraph::CalculateTotalCost() {
 
     // 计算当前层代价
     if (count > 0) {
-      std::vector<std::future<void>> results;
+      // std::vector<std::future<void>> results;
       // 遍历区域内的所有s
       for (size_t r = next_lowest_row; r <= next_highest_row; ++r) {
         auto msg = std::make_shared<StGraphMessage>(c, r);
-        // 使用多线程计算代价
-        if (gridded_path_time_graph_config_
-                .enable_multi_thread_in_dp_st_graph()) {
-          results.push_back(
-              cyber::Async(&GriddedPathTimeGraph::CalculateCostAt, this, msg));
-        } 
-        // 使用单线程计算代价
-        else {
+        // // 使用多线程计算代价
+        // if (gridded_path_time_graph_config_
+        //         .enable_multi_thread_in_dp_st_graph()) {
+        //   results.push_back(
+        //       cyber::Async(&GriddedPathTimeGraph::CalculateCostAt, this, msg));
+        // } 
+        // // 使用单线程计算代价
+        // else {
           CalculateCostAt(msg);
-        }
+        // }
       }
-      if (gridded_path_time_graph_config_
-              .enable_multi_thread_in_dp_st_graph()) {
-        for (auto& result : results) {
-          result.get();
-        }
-      }
+      // if (gridded_path_time_graph_config_
+      //         .enable_multi_thread_in_dp_st_graph()) {
+      //   for (auto& result : results) {
+      //     result.get();
+      //   }
+      // }
     }
 
     // 计算下一层s的合法值区间
@@ -348,7 +348,7 @@ void GriddedPathTimeGraph::GetRowRange(const StGraphPoint& point,
         std::distance(spatial_distance_by_index_.begin(), next_highest_itr);
   }
 
-  // 计算下一列最大s的索引值
+  // 计算下一列最小s的索引值
   const double s_lower_bound =
       std::fmax(0.0, v0 * unit_t_ + acc_coeff * max_deceleration_ * t_squared) +
       point.point().s();
@@ -506,6 +506,8 @@ void GriddedPathTimeGraph::CalculateCostAt(
     // Use pre_v = (pre_point.s - prepre_point.s) / unit_t as previous v
     // Current acc estimate: curr_a = (curr_v - pre_v) / unit_t
     // = (point.s + prepre_point.s - 2 * pre_point.s) / (unit_t * unit_t)
+
+    // 加速度校验
     const double curr_a =
         2 *
         ((cost_cr.point().s() - pre_col[r_pre].point().s()) / unit_t_ -
@@ -515,11 +517,13 @@ void GriddedPathTimeGraph::CalculateCostAt(
       continue;
     }
 
+    // 速度校验
     if (pre_col[r_pre].GetOptimalSpeed() + curr_a * unit_t_ < -kDoubleEpsilon &&
         cost_cr.point().s() > min_s_consider_speed) {
       continue;
     }
 
+    // 碰撞校验
     if (CheckOverlapOnDpStGraph(st_graph_data_.st_boundaries(), cost_cr,
                                 pre_col[r_pre])) {
       continue;
