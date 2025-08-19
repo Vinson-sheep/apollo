@@ -31,6 +31,7 @@
 namespace apollo {
 namespace common {
 
+// 无限脉冲响应（Infinite Impulse Response）
 /**
  * @class DigitalFilter
  * @brief The DigitalFilter class is used to pass signals with a frequency

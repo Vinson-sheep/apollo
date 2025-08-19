@@ -93,6 +93,7 @@ double DigitalFilter::UpdateLast(const double input) {
   return input;
 }
 
+// sum = 数据×系数
 double DigitalFilter::Compute(const std::deque<double> &values,
                               const std::vector<double> &coefficients,
                               const std::size_t coeff_start,

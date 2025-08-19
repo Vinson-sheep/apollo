@@ -163,12 +163,14 @@ void LatController::LogInitParameters() {
 }
 
 void LatController::InitializeFilters() {
-  // Low pass filter
+  // 低通滤波
   std::vector<double> den(3, 0.0);
   std::vector<double> num(3, 0.0);
   common::LpfCoefficients(ts_, lat_based_lqr_controller_conf_.cutoff_freq(),
                           &den, &num);
   digital_filter_.set_coefficients(den, num);
+
+  // 均值滤波
   lateral_error_filter_ = common::MeanFilter(static_cast<std::uint_fast8_t>(
       lat_based_lqr_controller_conf_.mean_filter_window_size()));
   heading_error_filter_ = common::MeanFilter(static_cast<std::uint_fast8_t>(
