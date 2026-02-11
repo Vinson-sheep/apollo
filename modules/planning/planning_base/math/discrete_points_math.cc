@@ -48,8 +48,9 @@ bool DiscretePointsMath::ComputePathProfile(
   std::vector<double> y_over_s_second_derivatives;
   std::vector<double> x_over_s_second_derivatives;
 
-  // Get finite difference approximated dx and dy for heading and kappa
-  // calculation
+  // 计算离散点的dx和dy
+  // 如果是首尾点，dx和dy为相邻点之差
+  // 如果是中间点，dx和dy为前后点之差
   std::size_t points_size = xy_points.size();
   for (std::size_t i = 0; i < points_size; ++i) {
     double x_delta = 0.0;
@@ -68,12 +69,12 @@ bool DiscretePointsMath::ComputePathProfile(
     dys.push_back(y_delta);
   }
 
-  // Heading calculation
+  // 计算航向角
   for (std::size_t i = 0; i < points_size; ++i) {
     headings->push_back(std::atan2(dys[i], dxs[i]));
   }
 
-  // Get linear interpolated s for dkappa calculation
+  // 从0开始计算弧长s
   double distance = 0.0;
   accumulated_s->push_back(distance);
   double fx = xy_points[0].first;
@@ -147,6 +148,7 @@ bool DiscretePointsMath::ComputePathProfile(
     y_over_s_second_derivatives.push_back(ydds);
   }
 
+  // 估算kappa
   for (std::size_t i = 0; i < points_size; ++i) {
     double xds = x_over_s_first_derivatives[i];
     double yds = y_over_s_first_derivatives[i];
@@ -158,7 +160,7 @@ bool DiscretePointsMath::ComputePathProfile(
     kappas->push_back(kappa);
   }
 
-  // Dkappa calculation
+  // 估算Dkappa
   for (std::size_t i = 0; i < points_size; ++i) {
     double dkappa = 0.0;
     if (i == 0) {
