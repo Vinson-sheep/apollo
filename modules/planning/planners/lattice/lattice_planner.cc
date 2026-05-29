@@ -97,13 +97,18 @@ Status LatticePlanner::Plan(const TrajectoryPoint& planning_start_point,
                             ADCTrajectory* ptr_computed_trajectory) {
   size_t success_line_count = 0;
   size_t index = 0;
+  // 遍历所有参考线
   for (auto& reference_line_info : *frame->mutable_reference_line_info()) {
+    // 为每条参考线设置不同的优先级
+    // 默认第一条参考线优先级最高
     if (index != 0) {
       reference_line_info.SetPriorityCost(
           FLAGS_cost_non_priority_reference_line);
     } else {
       reference_line_info.SetPriorityCost(0.0);
     }
+
+    // 针对单条参考线进行规划
     auto status =
         PlanOnReferenceLine(planning_start_point, frame, &reference_line_info);
 
@@ -120,6 +125,7 @@ Status LatticePlanner::Plan(const TrajectoryPoint& planning_start_point,
     ++index;
   }
 
+  // 只要有一条参考线规划成功即返回 OK，否则报错
   if (success_line_count > 0) {
     return Status::OK();
   }
@@ -127,44 +133,45 @@ Status LatticePlanner::Plan(const TrajectoryPoint& planning_start_point,
                 "Failed to plan on any reference line.");
 }
 
+// 对指定参考线进行规划 （核心函数）
 Status LatticePlanner::PlanOnReferenceLine(
     const TrajectoryPoint& planning_init_point, Frame* frame,
     ReferenceLineInfo* reference_line_info) {
-  static size_t num_planning_cycles = 0;
-  static size_t num_planning_succeeded_cycles = 0;
+  // static size_t num_planning_cycles = 0;
+  // static size_t num_planning_succeeded_cycles = 0;
 
-  double start_time = Clock::NowInSeconds();
-  double current_time = start_time;
+  // double start_time = Clock::NowInSeconds();
+  // double current_time = start_time;
 
-  ADEBUG << "Number of planning cycles: " << num_planning_cycles << " "
-         << num_planning_succeeded_cycles;
-  ++num_planning_cycles;
+  // ADEBUG << "Number of planning cycles: " << num_planning_cycles << " "
+  //        << num_planning_succeeded_cycles;
+  // ++num_planning_cycles;
 
   reference_line_info->set_is_on_reference_line();
-  // 1. obtain a reference line and transform it to the PathPoint format.
+
+  // 1. 参考线格式转换，计算累积弧长 s
   auto ptr_reference_line =
       std::make_shared<std::vector<PathPoint>>(ToDiscretizedReferenceLine(
           reference_line_info->reference_line().reference_points()));
 
-  // 2. compute the matched point of the init planning point on the reference
-  // line.
+  // 2. 在参考线上找到规划起始点的最近匹配点
   PathPoint matched_point = PathMatcher::MatchToPath(
       *ptr_reference_line, planning_init_point.path_point().x(),
       planning_init_point.path_point().y());
 
-  // 3. according to the matched point, compute the init state in Frenet frame.
+  // 3. 提取Frenet投影点
   std::array<double, 3> init_s;
   std::array<double, 3> init_d;
   ComputeInitFrenetState(matched_point, planning_init_point, &init_s, &init_d);
 
-  ADEBUG << "ReferenceLine and Frenet Conversion Time = "
-         << (Clock::NowInSeconds() - current_time) * 1000;
-  current_time = Clock::NowInSeconds();
+  // ADEBUG << "ReferenceLine and Frenet Conversion Time = "
+  //        << (Clock::NowInSeconds() - current_time) * 1000;
+  // current_time = Clock::NowInSeconds();
 
   auto ptr_prediction_querier = std::make_shared<PredictionQuerier>(
       frame->obstacles(), ptr_reference_line);
 
-  // 4. parse the decision and get the planning target.
+  // 4. 初始化ST图，提取速度限制和规划目标
   auto ptr_path_time_graph = std::make_shared<PathTimeGraph>(
       ptr_prediction_querier->GetObstacles(), *ptr_reference_line,
       reference_line_info, init_s[0],
@@ -176,15 +183,15 @@ Status LatticePlanner::PlanOnReferenceLine(
   reference_line_info->SetLatticeCruiseSpeed(speed_limit);
 
   PlanningTarget planning_target = reference_line_info->planning_target();
-  if (planning_target.has_stop_point()) {
-    ADEBUG << "Planning target stop s: " << planning_target.stop_point().s()
-           << "Current ego s: " << init_s[0];
-  }
+  // if (planning_target.has_stop_point()) {
+  //   ADEBUG << "Planning target stop s: " << planning_target.stop_point().s()
+  //          << "Current ego s: " << init_s[0];
+  // }
 
-  ADEBUG << "Decision_Time = " << (Clock::NowInSeconds() - current_time) * 1000;
-  current_time = Clock::NowInSeconds();
+  // ADEBUG << "Decision_Time = " << (Clock::NowInSeconds() - current_time) * 1000;
+  // current_time = Clock::NowInSeconds();
 
-  // 5. generate 1d trajectory bundle for longitudinal and lateral respectively.
+  // 5. 生成横纵向轨迹候选集
   Trajectory1dGenerator trajectory1d_generator(
       init_s, init_d, ptr_path_time_graph, ptr_prediction_querier);
   std::vector<std::shared_ptr<Curve1d>> lon_trajectory1d_bundle;
@@ -192,34 +199,30 @@ Status LatticePlanner::PlanOnReferenceLine(
   trajectory1d_generator.GenerateTrajectoryBundles(
       planning_target, &lon_trajectory1d_bundle, &lat_trajectory1d_bundle);
 
-  ADEBUG << "Trajectory_Generation_Time = "
-         << (Clock::NowInSeconds() - current_time) * 1000;
-  current_time = Clock::NowInSeconds();
+  // ADEBUG << "Trajectory_Generation_Time = "
+  //        << (Clock::NowInSeconds() - current_time) * 1000;
+  // current_time = Clock::NowInSeconds();
 
-  // 6. first, evaluate the feasibility of the 1d trajectories according to
-  // dynamic constraints.
-  //   second, evaluate the feasible longitudinal and lateral trajectory pairs
-  //   and sort them according to the cost.
+  // 6. 对所有纵向×横向轨迹对计算代价，按代价排序入优先队列
   TrajectoryEvaluator trajectory_evaluator(
       init_s, planning_target, lon_trajectory1d_bundle, lat_trajectory1d_bundle,
       ptr_path_time_graph, ptr_reference_line);
 
-  ADEBUG << "Trajectory_Evaluator_Construction_Time = "
-         << (Clock::NowInSeconds() - current_time) * 1000;
-  current_time = Clock::NowInSeconds();
+  // ADEBUG << "Trajectory_Evaluator_Construction_Time = "
+  //        << (Clock::NowInSeconds() - current_time) * 1000;
+  // current_time = Clock::NowInSeconds();
 
-  ADEBUG << "number of trajectory pairs = "
-         << trajectory_evaluator.num_of_trajectory_pairs()
-         << "  number_lon_traj = " << lon_trajectory1d_bundle.size()
-         << "  number_lat_traj = " << lat_trajectory1d_bundle.size();
+  // ADEBUG << "number of trajectory pairs = "
+  //        << trajectory_evaluator.num_of_trajectory_pairs()
+  //        << "  number_lon_traj = " << lon_trajectory1d_bundle.size()
+  //        << "  number_lat_traj = " << lat_trajectory1d_bundle.size();
 
   // Get instance of collision checker and constraint checker
   CollisionChecker collision_checker(frame->obstacles(), init_s[0], init_d[0],
                                      *ptr_reference_line, reference_line_info,
                                      ptr_path_time_graph);
 
-  // 7. always get the best pair of trajectories to combine; return the first
-  // collision-free trajectory.
+  // 7. 从优先队列逐对取出，组合为2D轨迹，检查约束和碰撞，返回第一个合法轨迹
   size_t constraint_failure_count = 0;
   size_t collision_failure_count = 0;
   size_t combined_constraint_failure_count = 0;
@@ -238,51 +241,50 @@ Status LatticePlanner::PlanOnReferenceLine(
         trajectory_evaluator.top_trajectory_pair_cost();
     auto trajectory_pair = trajectory_evaluator.next_top_trajectory_pair();
 
-    // combine two 1d trajectories to one 2d trajectory
+    // 获取二维轨迹
     auto combined_trajectory = TrajectoryCombiner::Combine(
         *ptr_reference_line, *trajectory_pair.first, *trajectory_pair.second,
         planning_init_point.relative_time());
 
-    // check longitudinal and lateral acceleration
-    // considering trajectory curvatures
+    // 校验轨迹参数
     auto result = ConstraintChecker::ValidTrajectory(combined_trajectory);
     if (result != ConstraintChecker::Result::VALID) {
-      ++combined_constraint_failure_count;
+      // ++combined_constraint_failure_count;
 
-      switch (result) {
-        case ConstraintChecker::Result::LON_VELOCITY_OUT_OF_BOUND:
-          lon_vel_failure_count += 1;
-          break;
-        case ConstraintChecker::Result::LON_ACCELERATION_OUT_OF_BOUND:
-          lon_acc_failure_count += 1;
-          break;
-        case ConstraintChecker::Result::LON_JERK_OUT_OF_BOUND:
-          lon_jerk_failure_count += 1;
-          break;
-        case ConstraintChecker::Result::CURVATURE_OUT_OF_BOUND:
-          curvature_failure_count += 1;
-          break;
-        case ConstraintChecker::Result::LAT_ACCELERATION_OUT_OF_BOUND:
-          lat_acc_failure_count += 1;
-          break;
-        case ConstraintChecker::Result::LAT_JERK_OUT_OF_BOUND:
-          lat_jerk_failure_count += 1;
-          break;
-        case ConstraintChecker::Result::VALID:
-        default:
-          // Intentional empty
-          break;
-      }
+      // switch (result) {
+      //   case ConstraintChecker::Result::LON_VELOCITY_OUT_OF_BOUND:
+      //     lon_vel_failure_count += 1;
+      //     break;
+      //   case ConstraintChecker::Result::LON_ACCELERATION_OUT_OF_BOUND:
+      //     lon_acc_failure_count += 1;
+      //     break;
+      //   case ConstraintChecker::Result::LON_JERK_OUT_OF_BOUND:
+      //     lon_jerk_failure_count += 1;
+      //     break;
+      //   case ConstraintChecker::Result::CURVATURE_OUT_OF_BOUND:
+      //     curvature_failure_count += 1;
+      //     break;
+      //   case ConstraintChecker::Result::LAT_ACCELERATION_OUT_OF_BOUND:
+      //     lat_acc_failure_count += 1;
+      //     break;
+      //   case ConstraintChecker::Result::LAT_JERK_OUT_OF_BOUND:
+      //     lat_jerk_failure_count += 1;
+      //     break;
+      //   case ConstraintChecker::Result::VALID:
+      //   default:
+      //     // Intentional empty
+      //     break;
+      // }
       continue;
     }
 
-    // check collision with other obstacles
+    // 校验安全性
     if (collision_checker.InCollision(combined_trajectory)) {
       ++collision_failure_count;
       continue;
     }
 
-    // put combine trajectory into debug data
+    // 记录轨迹相关信息
     const auto& combined_trajectory_points = combined_trajectory;
     num_lattice_traj += 1;
     reference_line_info->SetTrajectory(combined_trajectory);
@@ -290,36 +292,36 @@ Status LatticePlanner::PlanOnReferenceLine(
                                  trajectory_pair_cost);
     reference_line_info->SetDrivable(true);
 
-    // Print the chosen end condition and start condition
-    ADEBUG << "Starting Lon. State: s = " << init_s[0] << " ds = " << init_s[1]
-           << " dds = " << init_s[2];
+    // // Print the chosen end condition and start condition
+    // ADEBUG << "Starting Lon. State: s = " << init_s[0] << " ds = " << init_s[1]
+    //        << " dds = " << init_s[2];
     // cast
-    auto lattice_traj_ptr =
-        std::dynamic_pointer_cast<LatticeTrajectory1d>(trajectory_pair.first);
-    if (!lattice_traj_ptr) {
-      ADEBUG << "Dynamically casting trajectory1d ptr. failed.";
-    }
+    // auto lattice_traj_ptr =
+    //     std::dynamic_pointer_cast<LatticeTrajectory1d>(trajectory_pair.first);
+    // if (!lattice_traj_ptr) {
+    //   ADEBUG << "Dynamically casting trajectory1d ptr. failed.";
+    // }
 
-    if (lattice_traj_ptr->has_target_position()) {
-      ADEBUG << "Ending Lon. State s = " << lattice_traj_ptr->target_position()
-             << " ds = " << lattice_traj_ptr->target_velocity()
-             << " t = " << lattice_traj_ptr->target_time();
-    }
+    // if (lattice_traj_ptr->has_target_position()) {
+    //   ADEBUG << "Ending Lon. State s = " << lattice_traj_ptr->target_position()
+    //          << " ds = " << lattice_traj_ptr->target_velocity()
+    //          << " t = " << lattice_traj_ptr->target_time();
+    // }
 
-    ADEBUG << "InputPose";
-    ADEBUG << "XY: " << planning_init_point.ShortDebugString();
-    ADEBUG << "S: (" << init_s[0] << ", " << init_s[1] << "," << init_s[2]
-           << ")";
-    ADEBUG << "L: (" << init_d[0] << ", " << init_d[1] << "," << init_d[2]
-           << ")";
+    // ADEBUG << "InputPose";
+    // ADEBUG << "XY: " << planning_init_point.ShortDebugString();
+    // ADEBUG << "S: (" << init_s[0] << ", " << init_s[1] << "," << init_s[2]
+    //        << ")";
+    // ADEBUG << "L: (" << init_d[0] << ", " << init_d[1] << "," << init_d[2]
+    //        << ")";
 
-    ADEBUG << "Reference_line_priority_cost = "
-           << reference_line_info->PriorityCost();
-    ADEBUG << "Total_Trajectory_Cost = " << trajectory_pair_cost;
-    ADEBUG << "OutputTrajectory";
-    for (uint i = 0; i < 10; ++i) {
-      ADEBUG << combined_trajectory_points[i].ShortDebugString();
-    }
+    // ADEBUG << "Reference_line_priority_cost = "
+    //        << reference_line_info->PriorityCost();
+    // ADEBUG << "Total_Trajectory_Cost = " << trajectory_pair_cost;
+    // ADEBUG << "OutputTrajectory";
+    // for (uint i = 0; i < 10; ++i) {
+    //   ADEBUG << combined_trajectory_points[i].ShortDebugString();
+    // }
 
     break;
     /*
@@ -333,29 +335,34 @@ Status LatticePlanner::PlanOnReferenceLine(
     */
   }
 
-  ADEBUG << "Trajectory_Evaluation_Time = "
-         << (Clock::NowInSeconds() - current_time) * 1000;
+  // ADEBUG << "Trajectory_Evaluation_Time = "
+  //        << (Clock::NowInSeconds() - current_time) * 1000;
 
-  ADEBUG << "Step CombineTrajectory Succeeded";
+  // ADEBUG << "Step CombineTrajectory Succeeded";
 
-  ADEBUG << "1d trajectory not valid for constraint ["
-         << constraint_failure_count << "] times";
-  ADEBUG << "Combined trajectory not valid for ["
-         << combined_constraint_failure_count << "] times";
-  ADEBUG << "Trajectory not valid for collision [" << collision_failure_count
-         << "] times";
-  ADEBUG << "Total_Lattice_Planning_Frame_Time = "
-         << (Clock::NowInSeconds() - start_time) * 1000;
+  // ADEBUG << "1d trajectory not valid for constraint ["
+  //        << constraint_failure_count << "] times";
+  // ADEBUG << "Combined trajectory not valid for ["
+  //        << combined_constraint_failure_count << "] times";
+  // ADEBUG << "Trajectory not valid for collision [" << collision_failure_count
+  //        << "] times";
+  // ADEBUG << "Total_Lattice_Planning_Frame_Time = "
+  //        << (Clock::NowInSeconds() - start_time) * 1000;
 
+  // 如果找到轨迹，则使用
   if (num_lattice_traj > 0) {
-    ADEBUG << "Planning succeeded";
-    num_planning_succeeded_cycles += 1;
+    // ADEBUG << "Planning succeeded";
+    // num_planning_succeeded_cycles += 1;
     reference_line_info->SetDrivable(true);
     return Status::OK();
-  } else {
-    AERROR << "Planning failed";
+  } 
+  // 如果找不到轨迹
+  else {
+    // AERROR << "Planning failed";
+
+    // 尝试生成兜底轨迹
     if (FLAGS_enable_backup_trajectory) {
-      AERROR << "Use backup trajectory";
+      // AERROR << "Use backup trajectory";
       BackupTrajectoryGenerator backup_trajectory_generator(
           init_s, init_d, planning_init_point.relative_time(),
           std::make_shared<CollisionChecker>(collision_checker),
@@ -368,9 +375,13 @@ Status LatticePlanner::PlanOnReferenceLine(
       reference_line_info->SetDrivable(true);
       return Status::OK();
 
-    } else {
+    } 
+    // 不生成兜底轨迹
+    else {
       reference_line_info->SetCost(std::numeric_limits<double>::infinity());
     }
+
+    // 返回失败
     return Status(ErrorCode::PLANNING_ERROR, "No feasible trajectories");
   }
 }
